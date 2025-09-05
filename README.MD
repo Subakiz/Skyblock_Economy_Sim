@@ -63,11 +63,11 @@ This repository is a production-minded scaffold for building a comprehensive eco
   - [x] Baseline forecaster
   - [x] API endpoints for latest forecast
 
-- Phase 2
-  - [ ] Auctions roll-ups and BIN analytics
-  - [ ] Item ontology coverage + craft-path PnL service
-  - [ ] Backtesting framework with fees, slippage, and fill logic
-  - [ ] Event feature ingestion (mayors, seasonal)
+- Phase 2 ✅
+  - [x] Auctions roll-ups and BIN analytics
+  - [x] Item ontology coverage + craft-path PnL service
+  - [x] Backtesting framework with fees, slippage, and fill logic
+  - [x] Event feature ingestion (mayors, seasonal)
 
 - Phase 3
   - [ ] Multivariate ML (LightGBM/XGBoost)
@@ -106,6 +106,21 @@ python -m modeling.features.feature_pipeline
 **Single Product Forecasting:**
 ```bash
 python -m modeling.forecast.price_forecaster ENCHANTED_LAPIS_BLOCK
+```
+
+**Craft Profitability Analysis (Phase 2):**
+```bash
+python -m modeling.profitability.crafting_profit ENCHANTED_LAPIS_BLOCK --horizon 1h --pricing median
+```
+
+**Strategy Backtesting (Phase 2):**
+```bash
+python -m backtesting.run --strategy craft_and_sell --item ENCHANTED_LAPIS_BLOCK --start 2025-08-01 --end 2025-09-01 --capital 10000000
+```
+
+**Auction House Data Collection (Phase 2):**
+```bash
+python -m ingestion.auction_collector
 ```
 
 ## Notes

@@ -5,3 +5,9 @@ fastapi>=0.100.0
 uvicorn>=0.23.0
 pandas>=2.0.0
 pydantic>=2.0.0
+# Phase 3: Advanced ML and Agent-Based Modeling
+lightgbm>=4.0.0
+xgboost>=2.0.0
+scikit-learn>=1.3.0
+mesa>=2.1.0
+numpy>=1.24.0

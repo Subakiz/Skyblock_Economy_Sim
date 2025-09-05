@@ -50,3 +50,35 @@ no_database_mode:
   data_directory: "data"     # Directory to store NDJSON files
   max_file_size_mb: 100      # Max size per NDJSON file before rotation
   retention_hours: 168       # Keep data for 7 days (168 hours)
+
+# Phase 3: Advanced ML and Agent-Based Modeling
+phase3:
+  ml_models:
+    default_model: "lightgbm"    # lightgbm or xgboost
+    horizons: [15, 60, 240]      # Prediction horizons in minutes
+    retrain_interval_hours: 24   # How often to retrain models
+    feature_window_size: 500     # Minimum data points for training
+    cross_validation_splits: 3   # Time series CV splits
+    
+  agent_based_modeling:
+    default_agent_count: 100     # Number of agents in simulation
+    simulation_steps: 1000       # Default simulation length
+    market_volatility: 0.02      # Base market volatility
+    enable_external_shocks: true # Enable random market events
+    
+  scenario_testing:
+    scenarios:
+      - normal_market
+      - volatile_market  
+      - stable_market
+      - major_update
+    comparison_metrics:
+      - price_volatility
+      - agent_performance
+      - transaction_volume
+      
+  predictive_engine:
+    cache_predictions_minutes: 30  # Cache predictions for 30 minutes
+    confidence_threshold: 0.6      # Minimum confidence for trading signals
+    opportunity_threshold: 5.0     # Minimum expected return % for opportunities
+    max_opportunities: 10          # Maximum opportunities to report

@@ -1,15 +1,27 @@
 import os
 import json
 import psycopg2
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 from datetime import datetime
+import asyncio
+import traceback
 
 from modeling.profitability.crafting_profit import compute_profitability, load_item_ontology
 from modeling.profitability.file_data_access import get_file_storage_if_enabled
 
-app = FastAPI(title="SkyBlock Econ Model API", version="0.2.0")
+# Phase 3 imports
+try:
+    from modeling.forecast.ml_forecaster import train_and_forecast_ml, MLForecaster
+    from modeling.agents.market_simulation import MarketModel, ScenarioEngine
+    from modeling.simulation.predictive_engine import PredictiveMarketEngine
+    PHASE3_AVAILABLE = True
+except ImportError as e:
+    print(f"Phase 3 features not available: {e}")
+    PHASE3_AVAILABLE = False
+
+app = FastAPI(title="SkyBlock Econ Model API", version="0.3.0")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -61,6 +73,49 @@ class BacktestRequest(BaseModel):
     end_date: str
     capital: float
     item_id: Optional[str] = None
+
+# Phase 3: Advanced ML and ABM models
+class MLForecastRequest(BaseModel):
+    product_id: str
+    model_type: str = "lightgbm"  # lightgbm or xgboost
+    horizons: List[int] = [15, 60, 240]
+
+class MLForecastResponse(BaseModel):
+    product_id: str
+    model_type: str
+    predictions: Dict[int, float]  # horizon -> predicted_price
+    feature_importance: Dict[str, Dict[str, float]]  # horizon -> {feature -> importance}
+    training_metrics: Dict[str, Any]
+    timestamp: str
+
+class MarketSimulationRequest(BaseModel):
+    scenario: str = "normal_market"
+    n_agents: int = 100
+    steps: int = 500
+    initial_prices: Optional[Dict[str, float]] = None
+    market_volatility: float = 0.02
+
+class MarketSimulationResponse(BaseModel):
+    scenario: str
+    results: Dict[str, Any]
+    agent_performance: List[Dict[str, Any]]
+    price_changes: Dict[str, float]
+    market_sentiment: float
+    total_trades: int
+
+class PredictiveAnalysisRequest(BaseModel):
+    items: List[str]
+    model_type: str = "lightgbm"
+    scenarios: List[str] = ["normal_market", "volatile_market"]
+    include_opportunities: bool = True
+
+class PredictiveAnalysisResponse(BaseModel):
+    items_analyzed: List[str]
+    ml_predictions: Dict[str, Dict[int, float]]
+    simulation_results: Dict[str, Any]
+    market_insights: Dict[str, Any]
+    trading_opportunities: List[Dict[str, Any]]
+    timestamp: str
 
 class BacktestResponse(BaseModel):
     total_return: float
@@ -247,3 +302,238 @@ def run_backtest(request: BacktestRequest):
         raise HTTPException(status_code=400, detail=f"Date parsing error: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Backtest error: {e}")
+
+# Phase 3: Advanced ML and Agent-Based Modeling Endpoints
+
+@app.post("/ml/train", response_model=MLForecastResponse)
+def train_ml_model(request: MLForecastRequest):
+    """Train and generate ML-based forecasts for a product."""
+    
+    if not PHASE3_AVAILABLE:
+        raise HTTPException(status_code=501, detail="Phase 3 ML features not available")
+    
+    if USE_FILES:
+        raise HTTPException(status_code=501, detail="ML forecasting requires database mode")
+    
+    try:
+        # Train the model and get predictions
+        train_and_forecast_ml(
+            product_id=request.product_id,
+            model_type=request.model_type,
+            horizons=tuple(request.horizons)
+        )
+        
+        # Load the trained model to get feature importance and metrics
+        from modeling.forecast.ml_forecaster import fetch_multivariate_series, create_features_targets
+        
+        conn = psycopg2.connect(DATABASE_URL)
+        try:
+            df = fetch_multivariate_series(conn, request.product_id)
+            if df is None:
+                raise HTTPException(status_code=404, detail="Insufficient data for ML training")
+            
+            datasets = create_features_targets(df, request.horizons)
+            forecaster = MLForecaster(model_type=request.model_type)
+            
+            predictions = {}
+            feature_importance = {}
+            training_metrics = {}
+            
+            # Get latest features for prediction
+            feature_names = [
+                'ma_15', 'ma_60', 'spread_bps', 'vol_window_30',
+                'price_lag_1', 'price_lag_5', 'momentum_1', 'momentum_5',
+                'ma_crossover', 'ma_ratio', 'vol_price_ratio',
+                'hour_of_day', 'day_of_week', 'day_of_month',
+                'market_volatility', 'market_momentum'
+            ]
+            
+            for col in feature_names:
+                if col not in df.columns:
+                    df[col] = 0.0
+            
+            latest_features = df[feature_names].iloc[-1:].values
+            
+            for horizon in request.horizons:
+                if horizon in datasets:
+                    X, y = datasets[horizon]
+                    metrics = forecaster.train(X, y, horizon)
+                    pred = forecaster.predict(latest_features, horizon)[0]
+                    
+                    predictions[horizon] = float(pred)
+                    feature_importance[str(horizon)] = forecaster.get_feature_importance(horizon)
+                    training_metrics[str(horizon)] = metrics
+            
+            return MLForecastResponse(
+                product_id=request.product_id,
+                model_type=request.model_type,
+                predictions=predictions,
+                feature_importance=feature_importance,
+                training_metrics=training_metrics,
+                timestamp=datetime.now().isoformat()
+            )
+            
+        finally:
+            conn.close()
+            
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"ML training error: {str(e)}")
+
+@app.post("/simulation/market", response_model=MarketSimulationResponse)
+def run_market_simulation(request: MarketSimulationRequest):
+    """Run agent-based market simulation."""
+    
+    if not PHASE3_AVAILABLE:
+        raise HTTPException(status_code=501, detail="Phase 3 ABM features not available")
+    
+    try:
+        scenario_engine = ScenarioEngine()
+        
+        if request.scenario not in scenario_engine.scenarios:
+            raise HTTPException(status_code=400, detail=f"Unknown scenario: {request.scenario}")
+        
+        # Create model with custom parameters
+        model = MarketModel(
+            n_agents=request.n_agents,
+            initial_prices=request.initial_prices,
+            market_volatility=request.market_volatility
+        )
+        
+        # Run simulation
+        results = model.run_simulation(steps=request.steps, verbose=False)
+        
+        return MarketSimulationResponse(
+            scenario=request.scenario,
+            results=results,
+            agent_performance=results['agent_performance'],
+            price_changes=results['price_changes'],
+            market_sentiment=results['final_sentiment'],
+            total_trades=results['transaction_count']
+        )
+        
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Simulation error: {str(e)}")
+
+@app.post("/analysis/predictive", response_model=PredictiveAnalysisResponse)
+def run_predictive_analysis(request: PredictiveAnalysisRequest, background_tasks: BackgroundTasks):
+    """Run comprehensive predictive market analysis."""
+    
+    if not PHASE3_AVAILABLE:
+        raise HTTPException(status_code=501, detail="Phase 3 predictive features not available")
+    
+    if USE_FILES:
+        raise HTTPException(status_code=501, detail="Predictive analysis requires database mode")
+    
+    try:
+        engine = PredictiveMarketEngine()
+        
+        # Run the full analysis (this may take a while)
+        results = engine.run_full_analysis(
+            items=request.items,
+            model_type=request.model_type
+        )
+        
+        # Extract key information for response
+        trading_opportunities = []
+        if request.include_opportunities:
+            trading_opportunities = results['market_insights']['trading_opportunities']
+        
+        return PredictiveAnalysisResponse(
+            items_analyzed=request.items,
+            ml_predictions=results['ml_predictions'],
+            simulation_results=results['simulation_results'],
+            market_insights=results['market_insights'],
+            trading_opportunities=trading_opportunities,
+            timestamp=results['timestamp']
+        )
+        
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Predictive analysis error: {str(e)}")
+
+@app.get("/scenarios/available")
+def get_available_scenarios():
+    """Get list of available market scenarios."""
+    
+    if not PHASE3_AVAILABLE:
+        raise HTTPException(status_code=501, detail="Phase 3 scenario features not available")
+    
+    try:
+        scenario_engine = ScenarioEngine()
+        return {
+            "scenarios": {
+                name: scenario["description"] 
+                for name, scenario in scenario_engine.scenarios.items()
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error loading scenarios: {str(e)}")
+
+@app.post("/scenarios/compare")
+def compare_scenarios(scenario_names: List[str], steps: int = 500):
+    """Compare multiple market scenarios."""
+    
+    if not PHASE3_AVAILABLE:
+        raise HTTPException(status_code=501, detail="Phase 3 scenario features not available")
+    
+    try:
+        scenario_engine = ScenarioEngine()
+        comparison = scenario_engine.compare_scenarios(scenario_names, steps)
+        
+        return comparison
+        
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Scenario comparison error: {str(e)}")
+
+@app.get("/models/status")
+def get_model_status():
+    """Get status of trained ML models."""
+    
+    if not PHASE3_AVAILABLE:
+        return {"phase3_available": False}
+    
+    try:
+        # Check for existing models
+        model_dir = "models"
+        models_info = {}
+        
+        if os.path.exists(model_dir):
+            model_files = [f for f in os.listdir(model_dir) if f.endswith('.pkl')]
+            
+            for model_file in model_files:
+                # Parse model filename: {item_id}_h{horizon}_{model_type}.pkl
+                parts = model_file.replace('.pkl', '').split('_')
+                if len(parts) >= 3:
+                    item_id = '_'.join(parts[:-2])
+                    horizon_part = parts[-2]
+                    model_type = parts[-1]
+                    
+                    if horizon_part.startswith('h'):
+                        horizon = horizon_part[1:]
+                        
+                        if item_id not in models_info:
+                            models_info[item_id] = {}
+                        
+                        models_info[item_id][horizon] = {
+                            'model_type': model_type,
+                            'file': model_file,
+                            'last_modified': datetime.fromtimestamp(
+                                os.path.getmtime(os.path.join(model_dir, model_file))
+                            ).isoformat()
+                        }
+        
+        return {
+            "phase3_available": True,
+            "models": models_info,
+            "model_directory": model_dir
+        }
+        
+    except Exception as e:
+        return {
+            "phase3_available": True,
+            "error": str(e),
+            "models": {}
+        }

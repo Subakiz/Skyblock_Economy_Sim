@@ -70,11 +70,11 @@ This repository is a production-minded scaffold for building a comprehensive eco
   - [x] Event feature ingestion (mayors, seasonal)
   - [x] **No-Database Mode** - NDJSON file storage alternative to PostgreSQL
 
-- Phase 3
-  - [ ] Multivariate ML (LightGBM/XGBoost)
-  - [ ] Agent-based modeling (Mesa)
-  - [ ] Scenario engine for shock testing
-  - [ ] Portfolio and risk module, strategy orchestration
+- Phase 3 ✅
+  - [x] Multivariate ML (LightGBM/XGBoost)
+  - [x] Agent-based modeling (Mesa)
+  - [x] Scenario engine for shock testing
+  - [x] Proactive market prediction and insight generation
 
 ## Storage Options
 
@@ -141,6 +141,21 @@ python -m modeling.profitability.crafting_profit ENCHANTED_LAPIS_BLOCK --horizon
 **Strategy Backtesting (Phase 2):**
 ```bash
 python -m backtesting.run --strategy craft_and_sell --item ENCHANTED_LAPIS_BLOCK --start 2025-08-01 --end 2025-09-01 --capital 10000000
+```
+
+**Advanced ML Forecasting (Phase 3):**
+```bash
+python -m modeling.forecast.ml_forecaster ENCHANTED_LAPIS_BLOCK lightgbm
+```
+
+**Agent-Based Market Simulation (Phase 3):**
+```bash
+python phase3_cli.py simulate --scenario volatile_market --agents 100 --steps 500
+```
+
+**Predictive Market Analysis (Phase 3):**
+```bash
+python phase3_cli.py analyze "HYPERION,NECRON_CHESTPLATE" --model-type lightgbm
 ```
 
 **Auction House Data Collection (Phase 2):**

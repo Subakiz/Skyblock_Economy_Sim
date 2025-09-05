@@ -1,0 +1,21 @@
+hypixel:
+  base_url: "https://api.hypixel.net"
+  max_requests_per_minute: 110
+  timeout_seconds: 10
+  poll_interval_seconds: 60
+  endpoints:
+    bazaar: "/skyblock/bazaar"
+
+storage:
+  database_url: "postgresql://user:pass@localhost:5432/skyblock"
+
+features:
+  lookbacks:
+    ma_short: 5
+    ma_medium: 15
+    ma_long: 60
+    volatility_window: 30
+
+forecast:
+  horizons: [15, 60, 240]  # minutes
+  model_version: "naive-v0"

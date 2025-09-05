@@ -75,8 +75,42 @@ This repository is a production-minded scaffold for building a comprehensive eco
   - [ ] Scenario engine for shock testing
   - [ ] Portfolio and risk module, strategy orchestration
 
+## Testing & Development
+
+### Quick Tests
+Run the smoke tests to validate the installation:
+```bash
+python test_smoke.py
+```
+
+### Component Demos  
+Explore individual components with interactive demos:
+```bash
+python demo.py
+```
+
+### Individual Module Usage
+
+**Rate-Limited API Client:**
+```python
+from ingestion.common.hypixel_client import HypixelClient
+client = HypixelClient("https://api.hypixel.net", "your-api-key")
+data = client.get_json("/skyblock/bazaar")
+```
+
+**Feature Engineering (standalone):**
+```bash
+python -m modeling.features.feature_pipeline
+```
+
+**Single Product Forecasting:**
+```bash
+python -m modeling.forecast.price_forecaster ENCHANTED_LAPIS_BLOCK
+```
+
 ## Notes
 
 - Respect API limits; this scaffold includes a token-bucket rate limiter.
 - The Hypixel API and game economy evolve. Keep ontology and assumptions versioned.
 - For Auctions at scale, consider object storage + Parquet; don’t overload Postgres.
+- All components are designed to be modular and can be used independently.

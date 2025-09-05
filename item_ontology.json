@@ -1,0 +1,37 @@
+{
+  "ENCHANTED_LAPIS_LAZULI": {
+    "display_name": "Enchanted Lapis Lazuli",
+    "craft": {
+      "inputs": [
+        { "item": "LAPIS_LAZULI", "qty": 160 }
+      ],
+      "fees": {
+        "npc": 0,
+        "tax_bps": 0
+      }
+    },
+    "sinks": [
+      { "type": "REFORGE", "target": "Lapis Armor", "notes": "Example sink reference" }
+    ],
+    "sources": [
+      { "type": "MINION", "notes": "Lapis minion output" },
+      { "type": "MOB_DROP", "mob": "Lapis Zombie" }
+    ]
+  },
+  "ENCHANTED_LAPIS_BLOCK": {
+    "display_name": "Enchanted Lapis Block",
+    "craft": {
+      "inputs": [
+        { "item": "ENCHANTED_LAPIS_LAZULI", "qty": 160 }
+      ],
+      "fees": {
+        "npc": 0,
+        "tax_bps": 0
+      }
+    },
+    "sinks": [
+      { "type": "UPGRADE", "notes": "Used in certain upgrades" }
+    ],
+    "sources": []
+  }
+}

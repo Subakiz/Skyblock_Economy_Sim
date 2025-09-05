@@ -146,3 +146,6 @@ Thumbs.db
 
 # No-database mode data files
 data/
+
+# ML model files
+models/*.pkl

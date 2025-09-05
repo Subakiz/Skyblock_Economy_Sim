@@ -1,84 +1,16 @@
+
 hypixel:
   base_url: "https://api.hypixel.net"
-  max_requests_per_minute: 110
-  timeout_seconds: 10
-  poll_interval_seconds: 60
-  endpoints:
-    bazaar: "/skyblock/bazaar"
-    auctions: "/skyblock/auctions"
-    auctions_ended: "/skyblock/auctions_ended"
-
+  
 storage:
   database_url: "postgresql://user:pass@localhost:5432/skyblock"
 
-features:
-  lookbacks:
-    ma_short: 5
-    ma_medium: 15
-    ma_long: 60
-    volatility_window: 30
-
-forecast:
-  horizons: [15, 60, 240]  # minutes
-  model_version: "naive-v0"
-
-# Phase 2: Auction House configuration
-auction_house:
-  poll_interval_seconds: 300  # 5 minutes for AH data
-  max_pages_per_cycle: 100    # limit pages to prevent overload
-  enable_raw_capture: false   # store raw JSON for diagnostics
-  fee_bps: 100               # 1% AH fee (configurable)
-  tax_bps: 0                 # additional tax basis points
-
-# Phase 2: Profitability analysis settings  
-profitability:
-  default_horizon: "1h"      # 15m, 1h, 4h, 1d
-  default_pricing: "median"  # median, p25, p50, p75, avg
-  min_sell_volume: 10        # minimum sales for reliable pricing
-
-# Phase 2: Backtesting defaults
-backtesting:
-  default_capital: 10000000  # 10M coins starting capital
-  execution_latency_ms: 500  # realistic execution delay
-  slippage_bps: 10           # 0.1% slippage
-  max_inventory_slots: 1000  # inventory constraint
-  refresh_interval_minutes: 15
-
-# No-Database Mode (Optional file-based storage)
 no_database_mode:
-  enabled: false             # Enable file-based storage instead of database
-  data_directory: "data"     # Directory to store NDJSON files
-  max_file_size_mb: 100      # Max size per NDJSON file before rotation
-  retention_hours: 168       # Keep data for 7 days (168 hours)
-
-# Phase 3: Advanced ML and Agent-Based Modeling
+  enabled: true
+  data_directory: "data"
+  max_file_size_mb: 100
+  retention_hours: 168
+  
 phase3:
   ml_models:
-    default_model: "lightgbm"    # lightgbm or xgboost
-    horizons: [15, 60, 240]      # Prediction horizons in minutes
-    retrain_interval_hours: 24   # How often to retrain models
-    feature_window_size: 500     # Minimum data points for training
-    cross_validation_splits: 3   # Time series CV splits
-    
-  agent_based_modeling:
-    default_agent_count: 100     # Number of agents in simulation
-    simulation_steps: 1000       # Default simulation length
-    market_volatility: 0.02      # Base market volatility
-    enable_external_shocks: true # Enable random market events
-    
-  scenario_testing:
-    scenarios:
-      - normal_market
-      - volatile_market  
-      - stable_market
-      - major_update
-    comparison_metrics:
-      - price_volatility
-      - agent_performance
-      - transaction_volume
-      
-  predictive_engine:
-    cache_predictions_minutes: 30  # Cache predictions for 30 minutes
-    confidence_threshold: 0.6      # Minimum confidence for trading signals
-    opportunity_threshold: 5.0     # Minimum expected return % for opportunities
-    max_opportunities: 10          # Maximum opportunities to report
+    default_model: "lightgbm"

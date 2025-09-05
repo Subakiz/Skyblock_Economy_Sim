@@ -27,6 +27,7 @@ class NDJSONStorage:
         (self.data_dir / "bazaar").mkdir(exist_ok=True)
         (self.data_dir / "auctions").mkdir(exist_ok=True)
         (self.data_dir / "auctions_ended").mkdir(exist_ok=True)
+        (self.data_dir / "forecasts").mkdir(exist_ok=True)  # Add forecasts directory
     
     def _get_current_file_path(self, data_type: str) -> Path:
         """Get the current active file path for a data type."""
@@ -39,6 +40,8 @@ class NDJSONStorage:
             return self.data_dir / "auctions" / f"auctions_{date_str}_{hour_str}.ndjson"
         elif data_type == "auctions_ended":
             return self.data_dir / "auctions_ended" / f"auctions_ended_{date_str}_{hour_str}.ndjson"
+        elif data_type == "forecasts":
+            return self.data_dir / "forecasts" / f"forecasts_{date_str}_{hour_str}.ndjson"
         else:
             raise ValueError(f"Unknown data type: {data_type}")
     
@@ -174,7 +177,7 @@ class NDJSONStorage:
         """Remove files older than the retention period."""
         cutoff_time = datetime.now(timezone.utc) - timedelta(hours=self.retention_hours)
         
-        for subdir in ["bazaar", "auctions", "auctions_ended"]:
+        for subdir in ["bazaar", "auctions", "auctions_ended", "forecasts"]:  # Add forecasts cleanup
             dir_path = self.data_dir / subdir
             if dir_path.exists():
                 for file_path in dir_path.glob("*.ndjson*"):

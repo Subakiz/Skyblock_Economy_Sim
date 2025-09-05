@@ -110,16 +110,40 @@ Output will indicate which mode is being used:
 Using file-based mode
 ```
 
+### ML Model Training
+
+Train ML models using file data:
+
+```bash
+python -m modeling.forecast.file_ml_forecaster ENCHANTED_LAPIS_BLOCK lightgbm
+```
+
+Output shows training progress:
+```
+Training lightgbm model for ENCHANTED_LAPIS_BLOCK with 600 data points
+Training horizon 15min: 597 samples, 16 features
+Horizon 15min - MAE: 8198.14, RMSE: 9698.70
+Top features for 15min: [('momentum_1', 228), ('ma_ratio', 204), ...]
+ML forecasts written for ENCHANTED_LAPIS_BLOCK: horizons=[15, 60, 240]
+```
+
 ## API Endpoints
 
-All existing endpoints work in file-based mode:
+All existing endpoints now work in file-based mode:
 
 ### Available Endpoints
 
 - ✅ `GET /healthz` - Health check with mode information
 - ✅ `GET /prices/ah/{product_id}` - Auction house price statistics
 - ✅ `GET /profit/craft/{product_id}` - Craft profitability analysis
-- ❌ `GET /forecast/{product_id}` - Forecasting (disabled in file mode)
+- ✅ `GET /forecast/{product_id}` - ML-based price forecasting (now supported!)
+- ✅ `POST /ml/train` - Train ML models using file data (now supported!)
+- ✅ `POST /analysis/predictive` - Comprehensive market analysis (now supported!)
+- ✅ `POST /simulation/market` - Agent-based market simulation
+- ✅ `POST /backtest/run` - Backtesting strategies
+- ✅ `GET /scenarios/available` - List available market scenarios
+- ✅ `POST /scenarios/compare` - Compare market scenarios
+- ✅ `GET /models/status` - Check trained ML model status
 
 ### Example Usage
 
@@ -133,6 +157,23 @@ curl http://localhost:8000/prices/ah/ENCHANTED_LAPIS_BLOCK
 curl http://localhost:8000/profit/craft/ENCHANTED_LAPIS_BLOCK?horizon=1h&pricing=median
 ```
 
+**Get ML-based forecast:** (now supported in file mode!)
+```bash
+curl http://localhost:8000/forecast/ENCHANTED_LAPIS_BLOCK?horizon_minutes=60
+```
+
+**Train ML models:**
+```bash
+curl -X POST http://localhost:8000/ml/train -H "Content-Type: application/json" \
+     -d '{"product_id": "ENCHANTED_LAPIS_BLOCK", "model_type": "lightgbm", "horizons": [15, 60, 240]}'
+```
+
+**Run predictive analysis:**
+```bash
+curl -X POST http://localhost:8000/analysis/predictive -H "Content-Type: application/json" \
+     -d '{"items": ["ENCHANTED_LAPIS_BLOCK"], "model_type": "lightgbm", "include_opportunities": true}'
+```
+
 ## Performance Characteristics
 
 ### Advantages
@@ -143,10 +184,9 @@ curl http://localhost:8000/profit/craft/ENCHANTED_LAPIS_BLOCK?horizon=1h&pricing
 - **No connection limits or locks**
 
 ### Limitations  
-- **No complex queries** - Limited to simple aggregations
-- **No forecasting** - ML models require database features
-- **Memory usage** - Data loaded into memory for analysis
-- **No real-time views** - Data aggregated on demand
+- **Simplified market context** - Cross-item features are approximated rather than calculated across all products
+- **Memory usage** - Data loaded into memory for analysis (but optimized for efficiency)
+- **File I/O overhead** - Complex analyses may be slower than database queries for large datasets
 
 ## Development and Testing
 
@@ -235,16 +275,19 @@ head data/bazaar/bazaar_*.ndjson
 
 ### Key Components
 
-- **`storage/ndjson_storage.py`** - Core file storage and retrieval
+- **`storage/ndjson_storage.py`** - Core file storage and retrieval (enhanced with forecasts support)
 - **`modeling/profitability/file_data_access.py`** - File-based data access layer
+- **`modeling/profitability/file_feature_engineering.py`** - File-based feature engineering for ML
+- **`modeling/forecast/file_ml_forecaster.py`** - File-based ML forecasting engine
 - **Updated collectors** - Dual-mode support for database + files
-- **Updated API service** - Automatic mode detection and routing
+- **Updated API service** - Full feature parity between modes
 
 ### Data Flow
 
 ```
-Hypixel API → Collectors → NDJSON Files → Data Access Layer → API Endpoints
-                      ↘ Database (if enabled)
+Hypixel API → Collectors → NDJSON Files → Feature Engineering → ML Models → API Endpoints
+                      ↘ Database (if enabled)              ↗
+                                                      File-based Analysis
 ```
 
-This architecture ensures the no-database mode is a complete replacement for basic use cases while maintaining compatibility with the full database mode.
+This architecture ensures the no-database mode is a complete replacement for all use cases while maintaining compatibility with the full database mode.

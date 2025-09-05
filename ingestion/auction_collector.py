@@ -17,6 +17,7 @@ from typing import Dict, Any, List, Optional
 import yaml
 
 from ingestion.common.hypixel_client import HypixelClient
+from storage.ndjson_storage import get_storage_instance
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -118,7 +119,7 @@ def extract_ended_auction_data(raw_auction: Dict[str, Any], enable_raw_capture: 
     
     return base_data
 
-def collect_auctions(client: HypixelClient, conn, cfg: Dict[str, Any]) -> int:
+def collect_auctions(client: HypixelClient, conn, cfg: Dict[str, Any], storage=None) -> int:
     """Collect active auctions with pagination support."""
     endpoint = cfg["hypixel"]["endpoints"]["auctions"]
     max_pages = cfg["auction_house"]["max_pages_per_cycle"]
@@ -126,6 +127,7 @@ def collect_auctions(client: HypixelClient, conn, cfg: Dict[str, Any]) -> int:
     
     total_auctions = 0
     page = 0
+    use_database = storage is None
     
     while page < max_pages:
         try:
@@ -143,13 +145,36 @@ def collect_auctions(client: HypixelClient, conn, cfg: Dict[str, Any]) -> int:
             # Process auctions in this page
             for auction in auctions:
                 try:
-                    auction_data = extract_auction_data(auction, enable_raw_capture)
-                    upsert_auction(conn, auction_data, "auctions")
+                    if use_database:
+                        auction_data = extract_auction_data(auction, enable_raw_capture)
+                        upsert_auction(conn, auction_data, "auctions")
+                    else:
+                        # File-based storage - create simplified record
+                        record = {
+                            "uuid": auction.get("uuid"),
+                            "item_id": auction.get("item_name"),
+                            "item_name": auction.get("item_name"),
+                            "tier": auction.get("tier"),
+                            "bin": auction.get("bin", False),
+                            "starting_bid": auction.get("starting_bid"),
+                            "highest_bid": auction.get("highest_bid_amount"),
+                            "start_time": datetime.fromtimestamp(auction.get("start", 0) / 1000, tz=timezone.utc).isoformat(),
+                            "end_time": datetime.fromtimestamp(auction.get("end", 0) / 1000, tz=timezone.utc).isoformat(),
+                            "seller": auction.get("auctioneer"),
+                            "bids_count": len(auction.get("bids", [])),
+                            "category": auction.get("category"),
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                        if enable_raw_capture:
+                            record["raw_data"] = auction
+                        storage.append_record("auctions", record)
+                    
                     total_auctions += 1
                 except Exception as e:
                     logger.error(f"Error processing auction {auction.get('uuid', 'unknown')}: {e}")
             
-            conn.commit()
+            if use_database:
+                conn.commit()
             
             # Check if we've reached the last page
             if page >= total_pages - 1:
@@ -165,12 +190,13 @@ def collect_auctions(client: HypixelClient, conn, cfg: Dict[str, Any]) -> int:
     logger.info(f"Collected {total_auctions} auctions across {page + 1} pages")
     return total_auctions
 
-def collect_ended_auctions(client: HypixelClient, conn, cfg: Dict[str, Any]) -> int:
+def collect_ended_auctions(client: HypixelClient, conn, cfg: Dict[str, Any], storage=None) -> int:
     """Collect recently ended auctions."""
     endpoint = cfg["hypixel"]["endpoints"]["auctions_ended"]
     enable_raw_capture = cfg["auction_house"]["enable_raw_capture"]
     
     total_ended = 0
+    use_database = storage is None
     
     try:
         logger.info("Fetching ended auctions")
@@ -181,13 +207,38 @@ def collect_ended_auctions(client: HypixelClient, conn, cfg: Dict[str, Any]) -> 
         
         for auction in ended_auctions:
             try:
-                auction_data = extract_ended_auction_data(auction, enable_raw_capture)
-                upsert_auction(conn, auction_data, "auctions_ended")
+                if use_database:
+                    auction_data = extract_ended_auction_data(auction, enable_raw_capture)
+                    upsert_auction(conn, auction_data, "auctions_ended")
+                else:
+                    # File-based storage - create simplified record
+                    record = {
+                        "uuid": auction.get("uuid"),
+                        "item_id": auction.get("item_name"),
+                        "item_name": auction.get("item_name"),
+                        "tier": auction.get("tier"),
+                        "bin": auction.get("bin", False),
+                        "starting_bid": auction.get("starting_bid"),
+                        "highest_bid": auction.get("highest_bid_amount"),
+                        "sale_price": auction.get("price"),
+                        "start_time": datetime.fromtimestamp(auction.get("auction_start", 0) / 1000, tz=timezone.utc).isoformat(),
+                        "end_time": datetime.fromtimestamp(auction.get("timestamp", 0) / 1000, tz=timezone.utc).isoformat(),
+                        "seller": auction.get("seller"),
+                        "buyer": auction.get("buyer"),
+                        "bids_count": len(auction.get("bids", [])),
+                        "category": auction.get("category"),
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+                    if enable_raw_capture:
+                        record["raw_data"] = auction
+                    storage.append_record("auctions_ended", record)
+                
                 total_ended += 1
             except Exception as e:
                 logger.error(f"Error processing ended auction {auction.get('uuid', 'unknown')}: {e}")
         
-        conn.commit()
+        if use_database:
+            conn.commit()
         
     except Exception as e:
         logger.error(f"Error fetching ended auctions: {e}")
@@ -206,14 +257,21 @@ def run():
         timeout_seconds=cfg["hypixel"]["timeout_seconds"],
     )
     
-    db_url = cfg["storage"]["database_url"]
     poll_interval = cfg["auction_house"]["poll_interval_seconds"]
     
-    logger.info("Connecting to database...")
-    conn = psycopg2.connect(db_url)
-    conn.autocommit = False  # We want explicit transaction control
+    # Check if no-database mode is enabled
+    storage = get_storage_instance(cfg)
+    use_database = storage is None
     
-    logger.info(f"Starting auction collector loop (poll interval: {poll_interval}s)...")
+    conn = None
+    if use_database:
+        db_url = cfg["storage"]["database_url"]
+        logger.info("Connecting to database...")
+        conn = psycopg2.connect(db_url)
+        conn.autocommit = False  # We want explicit transaction control
+        logger.info(f"Starting auction collector loop (Database mode, poll interval: {poll_interval}s)...")
+    else:
+        logger.info(f"Starting auction collector loop (File-based mode, poll interval: {poll_interval}s)...")
     
     try:
         while True:
@@ -221,15 +279,16 @@ def run():
             logger.info(f"[{cycle_start.isoformat()}] Starting collection cycle")
             
             # Collect active auctions
-            active_count = collect_auctions(client, conn, cfg)
+            active_count = collect_auctions(client, conn, cfg, storage)
             
             # Collect ended auctions  
-            ended_count = collect_ended_auctions(client, conn, cfg)
+            ended_count = collect_ended_auctions(client, conn, cfg, storage)
             
             cycle_end = datetime.now(timezone.utc)
             duration = (cycle_end - cycle_start).total_seconds()
             
-            logger.info(f"[{cycle_end.isoformat()}] Cycle complete: {active_count} active, {ended_count} ended auctions in {duration:.1f}s")
+            mode_str = "database" if use_database else "NDJSON files"
+            logger.info(f"[{cycle_end.isoformat()}] Cycle complete: {active_count} active, {ended_count} ended auctions in {duration:.1f}s (stored to {mode_str})")
             
             time.sleep(poll_interval)
             
@@ -239,8 +298,9 @@ def run():
         logger.error(f"Auction collector error: {e}")
         raise
     finally:
-        conn.close()
-        logger.info("Database connection closed")
+        if conn:
+            conn.close()
+        logger.info("Auction collector stopped")
 
 if __name__ == "__main__":
     run()

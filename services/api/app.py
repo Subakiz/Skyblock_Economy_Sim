@@ -7,10 +7,15 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime
 
 from modeling.profitability.crafting_profit import compute_profitability, load_item_ontology
+from modeling.profitability.file_data_access import get_file_storage_if_enabled
 
 app = FastAPI(title="SkyBlock Econ Model API", version="0.2.0")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Check if file-based mode is enabled
+FILE_STORAGE = get_file_storage_if_enabled()
+USE_FILES = FILE_STORAGE is not None
 
 # Load ontology at startup
 try:
@@ -18,6 +23,8 @@ try:
 except Exception as e:
     print(f"Warning: Could not load item ontology: {e}")
     ITEM_ONTOLOGY = {}
+
+print(f"API starting in {'file-based' if USE_FILES else 'database'} mode")
 
 class ForecastResponse(BaseModel):
     product_id: str
@@ -67,10 +74,21 @@ class BacktestResponse(BaseModel):
 
 @app.get("/healthz")
 def healthz():
-    return {"status": "ok"}
+    return {
+        "status": "ok", 
+        "mode": "file-based" if USE_FILES else "database",
+        "data_source": "NDJSON files" if USE_FILES else "PostgreSQL"
+    }
 
 @app.get("/forecast/{product_id}", response_model=ForecastResponse)
 def get_forecast(product_id: str, horizon_minutes: int = 60):
+    if USE_FILES:
+        # File-based mode doesn't support forecasting yet
+        raise HTTPException(
+            status_code=501, 
+            detail="Forecasting not yet implemented in file-based mode. Use database mode for forecasting."
+        )
+    
     if not DATABASE_URL:
         raise HTTPException(status_code=500, detail="DATABASE_URL not configured")
     conn = psycopg2.connect(DATABASE_URL)
@@ -100,6 +118,26 @@ def get_forecast(product_id: str, horizon_minutes: int = 60):
 @app.get("/prices/ah/{product_id}", response_model=AHPriceResponse)
 def get_ah_prices(product_id: str, window: str = "1h"):
     """Get Auction House price statistics for a product."""
+    
+    if USE_FILES:
+        # File-based mode
+        hours_back = 1 if window in ["1h", "4h"] else 0.25  # 15 minutes
+        stats = FILE_STORAGE.get_auction_price_stats(product_id, hours_back=int(hours_back * 2))
+        
+        if not stats or not stats.get("sale_count", 0):
+            raise HTTPException(status_code=404, detail="AH price data not found")
+        
+        return AHPriceResponse(
+            product_id=product_id,
+            window=window,
+            median_price=float(stats.get("median_price", 0)) if stats.get("median_price") else 0.0,
+            p25_price=float(stats.get("p25_price", 0)) if stats.get("p25_price") else 0.0,
+            p75_price=float(stats.get("p75_price", 0)) if stats.get("p75_price") else 0.0,
+            sale_count=int(stats.get("sale_count", 0)),
+            last_updated=datetime.now().isoformat()  # Approximation
+        )
+    
+    # Database mode
     if not DATABASE_URL:
         raise HTTPException(status_code=500, detail="DATABASE_URL not configured")
     
@@ -138,17 +176,22 @@ def get_ah_prices(product_id: str, window: str = "1h"):
 @app.get("/profit/craft/{product_id}", response_model=CraftProfitResponse)
 def get_craft_profitability(product_id: str, horizon: str = "1h", pricing: str = "median"):
     """Get craft profitability analysis for a product."""
-    if not DATABASE_URL:
-        raise HTTPException(status_code=500, detail="DATABASE_URL not configured")
     
     if not ITEM_ONTOLOGY:
         raise HTTPException(status_code=500, detail="Item ontology not available")
     
-    conn = psycopg2.connect(DATABASE_URL)
+    # Check which mode we're in
+    conn = None
+    if not USE_FILES:
+        if not DATABASE_URL:
+            raise HTTPException(status_code=500, detail="DATABASE_URL not configured")
+        conn = psycopg2.connect(DATABASE_URL)
+    
     try:
         # Get AH fee from config (hardcoded for now)
         ah_fee_bps = 100
         
+        # This function automatically detects file vs database mode
         result = compute_profitability(
             conn, ITEM_ONTOLOGY, product_id, horizon, pricing, ah_fee_bps
         )
@@ -171,7 +214,8 @@ def get_craft_profitability(product_id: str, horizon: str = "1h", pricing: str =
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 @app.post("/backtest/run", response_model=BacktestResponse)
 def run_backtest(request: BacktestRequest):

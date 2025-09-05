@@ -6,6 +6,8 @@ Combines item ontology with live Bazaar and Auction House prices to compute:
 - Expected sale prices
 - Margins (gross/net after fees)
 - ROI and turnover-adjusted profitability
+
+Supports both database and file-based (NDJSON) data sources.
 """
 
 import os
@@ -17,6 +19,13 @@ import psycopg2
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
+
+from modeling.profitability.file_data_access import (
+    get_file_storage_if_enabled, 
+    get_bazaar_price_from_files,
+    get_ah_price_stats_from_files,
+    compute_craft_cost_from_files
+)
 
 @dataclass
 class CraftProfitability:
@@ -162,6 +171,89 @@ def compute_profitability(
 ) -> CraftProfitability:
     """
     Compute full profitability analysis for a craftable product.
+    
+    Automatically detects whether to use database or file-based data source.
+    """
+    # Check if file-based mode is enabled
+    storage = get_file_storage_if_enabled()
+    
+    if storage is not None:
+        return compute_profitability_from_files(
+            storage, ontology, product_id, horizon, pricing, ah_fee_bps
+        )
+    else:
+        return compute_profitability_from_db(
+            conn, ontology, product_id, horizon, pricing, ah_fee_bps
+        )
+
+
+def compute_profitability_from_files(
+    storage,
+    ontology: Dict[str, Any], 
+    product_id: str, 
+    horizon: str = "1h",
+    pricing: str = "median",
+    ah_fee_bps: int = 100
+) -> CraftProfitability:
+    """
+    Compute profitability analysis using file-based data source.
+    """
+    # Compute craft cost
+    try:
+        craft_cost, best_path = compute_craft_cost_from_files(storage, ontology, product_id)
+    except ValueError as e:
+        raise ValueError(f"Cannot compute craft cost: {e}")
+    
+    # Get expected sale price (prefer AH for crafted items)
+    sale_price, sale_volume = get_ah_price_stats_from_files(storage, product_id, horizon, pricing)
+    
+    if sale_price is None:
+        # Fall back to Bazaar sell price
+        sale_price = get_bazaar_price_from_files(storage, product_id, "sell")
+        sale_volume = 0  # No volume data for Bazaar
+    
+    if sale_price is None:
+        raise ValueError(f"No sale price available for {product_id}")
+    
+    # Calculate margins
+    gross_margin = sale_price - craft_cost
+    ah_fee = sale_price * (ah_fee_bps / 10000)
+    net_margin = gross_margin - ah_fee
+    
+    # Calculate ROI
+    roi_percent = (net_margin / craft_cost * 100) if craft_cost > 0 else 0
+    
+    # Estimate turnover-adjusted profit (simple proxy using volume)
+    turnover_multiplier = min(sale_volume / 50.0, 2.0) if sale_volume > 0 else 0.5
+    turnover_adj_profit = net_margin * turnover_multiplier
+    
+    # Estimate data age (simplified - assume recent)
+    data_age_minutes = 15  # Placeholder
+    
+    return CraftProfitability(
+        product_id=product_id,
+        craft_cost=craft_cost,
+        expected_sale_price=sale_price,
+        gross_margin=gross_margin,
+        net_margin=net_margin,
+        roi_percent=roi_percent,
+        turnover_adj_profit=turnover_adj_profit,
+        best_path=best_path,
+        sell_volume=sale_volume,
+        data_age_minutes=data_age_minutes
+    )
+
+
+def compute_profitability_from_db(
+    conn, 
+    ontology: Dict[str, Any], 
+    product_id: str, 
+    horizon: str = "1h",
+    pricing: str = "median",
+    ah_fee_bps: int = 100
+) -> CraftProfitability:
+    """
+    Compute profitability analysis using database.
     """
     # Compute craft cost
     try:
@@ -242,12 +334,20 @@ def main():
     ontology = load_item_ontology()
     ah_fee_bps = cfg["auction_house"]["fee_bps"]
     
-    # Connect to database
-    db_url = cfg["storage"]["database_url"]
-    conn = psycopg2.connect(db_url)
+    # Check if file-based mode is enabled
+    storage = get_file_storage_if_enabled()
+    
+    conn = None
+    if storage is None:
+        # Database mode
+        db_url = cfg["storage"]["database_url"]
+        conn = psycopg2.connect(db_url)
+        print("Using database mode")
+    else:
+        print("Using file-based mode")
     
     try:
-        # Compute profitability
+        # Compute profitability (automatically detects mode)
         result = compute_profitability(
             conn, ontology, args.product_id, 
             args.horizon, args.pricing, ah_fee_bps
@@ -263,7 +363,8 @@ def main():
         print(f"Unexpected error: {e}", file=sys.stderr)
         sys.exit(1)
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 if __name__ == "__main__":
     main()

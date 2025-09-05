@@ -43,3 +43,10 @@ backtesting:
   slippage_bps: 10           # 0.1% slippage
   max_inventory_slots: 1000  # inventory constraint
   refresh_interval_minutes: 15
+
+# No-Database Mode (Optional file-based storage)
+no_database_mode:
+  enabled: false             # Enable file-based storage instead of database
+  data_directory: "data"     # Directory to store NDJSON files
+  max_file_size_mb: 100      # Max size per NDJSON file before rotation
+  retention_hours: 168       # Keep data for 7 days (168 hours)

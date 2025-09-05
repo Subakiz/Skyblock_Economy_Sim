@@ -68,6 +68,7 @@ This repository is a production-minded scaffold for building a comprehensive eco
   - [x] Item ontology coverage + craft-path PnL service
   - [x] Backtesting framework with fees, slippage, and fill logic
   - [x] Event feature ingestion (mayors, seasonal)
+  - [x] **No-Database Mode** - NDJSON file storage alternative to PostgreSQL
 
 - Phase 3
   - [ ] Multivariate ML (LightGBM/XGBoost)
@@ -75,12 +76,36 @@ This repository is a production-minded scaffold for building a comprehensive eco
   - [ ] Scenario engine for shock testing
   - [ ] Portfolio and risk module, strategy orchestration
 
+## Storage Options
+
+The system supports two storage modes:
+
+### Database Mode (Default)
+Full-featured mode using PostgreSQL for complex queries, forecasting, and ML features.
+
+### No-Database Mode 
+Lightweight mode using NDJSON files for basic price tracking and profitability analysis. Perfect for development, testing, or lightweight deployments.
+
+```yaml
+# Enable in config/config.yaml
+no_database_mode:
+  enabled: true
+  data_directory: "data"
+```
+
+See [docs/NO_DATABASE_MODE.md](docs/NO_DATABASE_MODE.md) for complete documentation.
+
 ## Testing & Development
 
 ### Quick Tests
 Run the smoke tests to validate the installation:
 ```bash
 python test_smoke.py
+```
+
+Test the no-database mode functionality:
+```bash
+python test_no_database_mode.py
 ```
 
 ### Component Demos  

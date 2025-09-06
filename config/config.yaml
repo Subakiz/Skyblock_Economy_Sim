@@ -49,3 +49,10 @@ phase3:
     confidence_threshold: 0.6
     opportunity_threshold: 5.0
     max_opportunities: 10
+
+# Discord Bot Configuration
+discord_bot:
+  # Bot token should be set via DISCORD_BOT_TOKEN environment variable
+  feature_build_interval_hours: 1
+  admin_roles: ["Administrator", "Bot Admin"]
+  max_analysis_items: 5

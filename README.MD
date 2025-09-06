@@ -2,6 +2,34 @@
 
 This repository is a production-minded scaffold for building a comprehensive economic model of Hypixel SkyBlock.
 
+## 🤖 NEW: Discord Bot
+
+**Transform the entire project into an interactive Discord bot!**
+
+The SkyBlock Economy Bot provides automated data collection and interactive analysis through Discord slash commands:
+
+- **🔄 Background automation**: Continuous data collection and feature building
+- **📊 `/status`**: Check bot health and data pipeline status  
+- **📈 `/analyze`**: Comprehensive ML-powered market analysis
+- **🔮 `/predict`**: Price predictions for specific time horizons
+- **⚙️ `/retrain`**: Admin command to retrain models
+- **❓ `/help`**: Bot usage instructions
+
+### Quick Bot Setup
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Set environment variables
+export DISCORD_BOT_TOKEN="your_discord_bot_token"
+export HYPIXEL_API_KEY="your_hypixel_api_key"  # Optional
+
+# Start the bot
+./start_bot.sh
+```
+
+See [DISCORD_BOT.md](DISCORD_BOT.md) for detailed setup and usage instructions.
+
 ## Core Components
 
 - **Frontend Web Interface**

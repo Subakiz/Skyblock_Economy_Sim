@@ -1,3 +1,13 @@
+"""
+Feature Pipeline for Skyblock Economy Sim
+
+This module builds features for machine learning models from bazaar price data.
+Supports both database and no-database (file-based) modes based on configuration.
+
+In no-database mode, reads from NDJSON files and outputs features to bazaar_features.ndjson.
+In database mode, uses PostgreSQL with the original SQL-based feature calculations.
+"""
+
 import os
 import yaml
 import pandas as pd

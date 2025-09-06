@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  skyblock-bot:
+    build: .
+    environment:
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - HYPIXEL_API_KEY=${HYPIXEL_API_KEY}
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "from bot import load_config; print('Bot is healthy')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Optional: PostgreSQL database (if not using no-database mode)
+  # postgres:
+  #   image: postgres:15
+  #   environment:
+  #     POSTGRES_DB: skyblock
+  #     POSTGRES_USER: skyblock
+  #     POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #     - ./storage/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+  #   ports:
+  #     - "5432:5432"
+  #   restart: unless-stopped
+
+# volumes:
+#   postgres_data:

@@ -16,6 +16,12 @@ import discord
 from discord import app_commands
 from discord.ext import tasks
 import yaml
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from io import BytesIO
+import numpy as np
 
 # Add project root to path
 project_root = Path(__file__).parent
@@ -404,6 +410,12 @@ async def help_command(interaction: discord.Interaction):
     )
     
     embed.add_field(
+        name="📊 `/plot <item_name>`",
+        value="Generate price history chart for an item\n*Example: `/plot WHEAT`*",
+        inline=False
+    )
+    
+    embed.add_field(
         name="ℹ️ **Supported Items**",
         value="High-value items like HYPERION, NECRON_CHESTPLATE, etc.\nCommodity items like WHEAT, SUGAR_CANE, etc.",
         inline=False
@@ -482,6 +494,168 @@ async def retrain_command(interaction: discord.Interaction, item_name: str):
     except Exception as e:
         logger.error(f"Retrain command failed: {e}")
         await interaction.followup.send(f"❌ Retraining failed: {str(e)}")
+
+@bot.tree.command(name="plot", description="Generate price history chart for an item")
+@app_commands.describe(item_name="Name of the item to plot price history for")
+async def plot_command(interaction: discord.Interaction, item_name: str):
+    """Generate a price history chart for an item."""
+    await interaction.response.defer()
+    
+    if not PHASE3_AVAILABLE or not IMPORTS_SUCCESS:
+        await interaction.followup.send("❌ Phase 3 features are not available.")
+        return
+    
+    try:
+        # Sanitize input
+        item_name = item_name.upper().strip()
+        
+        # Basic validation
+        if not item_name or len(item_name) > 50:
+            await interaction.followup.send("❌ Please provide a valid item name (max 50 characters)")
+            return
+        
+        if not item_name.replace('_', '').replace('-', '').isalnum():
+            await interaction.followup.send("❌ Item name can only contain letters, numbers, underscores, and hyphens")
+            return
+        
+        logger.info(f"Generating price chart for {item_name}")
+        
+        # Try to load bazaar data for the item
+        import pandas as pd
+        from pathlib import Path
+        
+        data_dir = Path("data")
+        bazaar_files = list(data_dir.glob("bazaar*.ndjson"))
+        
+        if not bazaar_files:
+            await interaction.followup.send(f"❌ No bazaar data found for plotting. Data collection may not be running.")
+            return
+        
+        # Load and filter data
+        dfs = []
+        for file in bazaar_files[:5]:  # Limit to recent files
+            try:
+                df = pd.read_json(file, lines=True)
+                if 'product_id' in df.columns:
+                    item_data = df[df['product_id'] == item_name]
+                    if not item_data.empty:
+                        dfs.append(item_data)
+            except:
+                continue
+        
+        if not dfs:
+            # Generate a sample chart to demonstrate functionality
+            dates = pd.date_range('2024-01-01', periods=100, freq='h')
+            prices = 100 + np.random.cumsum(np.random.randn(100) * 2)  # Random walk
+            
+            plt.figure(figsize=(12, 6))
+            plt.plot(dates, prices, linewidth=2, color='#1f77b4')
+            plt.title(f'{item_name} - Price History (Sample Data)', fontsize=16, fontweight='bold')
+            plt.xlabel('Time', fontsize=12)
+            plt.ylabel('Price (coins)', fontsize=12)
+            plt.grid(True, alpha=0.3)
+            
+            # Format x-axis
+            plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+            plt.gca().xaxis.set_major_locator(mdates.DayLocator(interval=5))
+            plt.xticks(rotation=45)
+            
+            plt.tight_layout()
+            
+            # Save to buffer
+            buffer = BytesIO()
+            plt.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
+            buffer.seek(0)
+            plt.close()
+            
+            # Create file object for Discord
+            file = discord.File(buffer, filename=f"{item_name.lower()}_price_chart.png")
+            
+            embed = discord.Embed(
+                title=f"📊 Price Chart - {item_name}",
+                description="Sample price chart (no historical data available)",
+                color=discord.Color.blue(),
+                timestamp=datetime.now(timezone.utc)
+            )
+            
+            embed.add_field(
+                name="ℹ️ Note",
+                value="This is a demonstration chart with sample data. Start data collection to see real price history.",
+                inline=False
+            )
+            
+            await interaction.followup.send(embed=embed, file=file)
+            
+        else:
+            # Process real data
+            df = pd.concat(dfs).sort_values('ts')
+            df['ts'] = pd.to_datetime(df['ts'])
+            
+            # Create the plot
+            plt.figure(figsize=(12, 6))
+            
+            if 'buy_price' in df.columns and not df['buy_price'].isna().all():
+                plt.plot(df['ts'], df['buy_price'], label='Buy Price', linewidth=2, alpha=0.8)
+            
+            if 'sell_price' in df.columns and not df['sell_price'].isna().all():
+                plt.plot(df['ts'], df['sell_price'], label='Sell Price', linewidth=2, alpha=0.8)
+            
+            plt.title(f'{item_name} - Price History', fontsize=16, fontweight='bold')
+            plt.xlabel('Time', fontsize=12)
+            plt.ylabel('Price (coins)', fontsize=12)
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            
+            # Format x-axis
+            plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m/%d %H:%M'))
+            plt.xticks(rotation=45)
+            
+            plt.tight_layout()
+            
+            # Save to buffer
+            buffer = BytesIO()
+            plt.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
+            buffer.seek(0)
+            plt.close()
+            
+            # Create file object for Discord
+            file = discord.File(buffer, filename=f"{item_name.lower()}_price_chart.png")
+            
+            embed = discord.Embed(
+                title=f"📊 Price Chart - {item_name}",
+                description=f"Historical price data ({len(df)} data points)",
+                color=discord.Color.green(),
+                timestamp=datetime.now(timezone.utc)
+            )
+            
+            # Add statistics
+            if 'buy_price' in df.columns:
+                avg_buy = df['buy_price'].mean()
+                embed.add_field(
+                    name="📈 Buy Price",
+                    value=f"Avg: {avg_buy:,.0f} coins",
+                    inline=True
+                )
+            
+            if 'sell_price' in df.columns:
+                avg_sell = df['sell_price'].mean()
+                embed.add_field(
+                    name="📉 Sell Price", 
+                    value=f"Avg: {avg_sell:,.0f} coins",
+                    inline=True
+                )
+            
+            embed.add_field(
+                name="📊 Data Points",
+                value=f"{len(df)} records",
+                inline=True
+            )
+            
+            await interaction.followup.send(embed=embed, file=file)
+        
+    except Exception as e:
+        logger.error(f"Plot command failed: {e}")
+        await interaction.followup.send(f"❌ Failed to generate chart: {str(e)}")
 
 def main():
     """Main entry point for the Discord bot."""

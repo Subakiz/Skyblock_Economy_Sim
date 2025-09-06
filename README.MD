@@ -12,6 +12,7 @@ The SkyBlock Economy Bot provides automated data collection and interactive anal
 - **📊 `/status`**: Check bot health and data pipeline status  
 - **📈 `/analyze`**: Comprehensive ML-powered market analysis
 - **🔮 `/predict`**: Price predictions for specific time horizons
+- **📊 `/plot`**: Generate price history charts  
 - **⚙️ `/retrain`**: Admin command to retrain models
 - **❓ `/help`**: Bot usage instructions
 

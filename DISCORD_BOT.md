@@ -31,6 +31,13 @@ Focused price prediction for a specific item and time horizon
 - Uses LightGBM models trained on historical data
 - Provides training status feedback
 
+#### `/plot <item_name>` 
+Generate price history chart for a specific item
+- Creates visual charts showing price trends over time
+- Displays both buy and sell prices when available
+- Shows average prices and data point statistics
+- Returns chart as a PNG image attachment
+
 #### `/retrain <item_name>` 
 Admin-only command to manually retrain models
 - Requires administrator permissions

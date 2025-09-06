@@ -1,7 +1,18 @@
-
 hypixel:
   base_url: "https://api.hypixel.net"
-  
+  max_requests_per_minute: 120
+  timeout_seconds: 10
+  poll_interval_seconds: 60
+  endpoints:
+    bazaar: "/skyblock/bazaar"
+    auctions: "/skyblock/auctions"
+    auctions_ended: "/skyblock/auctions_ended"
+
+auction_house:
+  poll_interval_seconds: 60
+  max_pages_per_cycle: 50
+  enable_raw_capture: true
+
 storage:
   database_url: "postgresql://user:pass@localhost:5432/skyblock"
 
@@ -10,7 +21,31 @@ no_database_mode:
   data_directory: "data"
   max_file_size_mb: 100
   retention_hours: 168
-  
+
+features:
+  lookbacks: [5, 15, 60]
+  volatility_windows: [30]
+
 phase3:
   ml_models:
     default_model: "lightgbm"
+    horizons: [15, 60, 240]
+    retrain_interval_hours: 24
+    feature_window_size: 500
+    cross_validation_splits: 3
+    
+  agent_based_modeling:
+    default_agent_count: 100
+    simulation_steps: 1000
+    market_volatility: 0.02
+    enable_external_shocks: true
+    
+  scenario_testing:
+    scenarios: [normal_market, volatile_market, stable_market, major_update]
+    comparison_metrics: [price_volatility, agent_performance, transaction_volume]
+      
+  predictive_engine:
+    cache_predictions_minutes: 30
+    confidence_threshold: 0.6
+    opportunity_threshold: 5.0
+    max_opportunities: 10

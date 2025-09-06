@@ -4,6 +4,12 @@ This repository is a production-minded scaffold for building a comprehensive eco
 
 ## Core Components
 
+- **Frontend Web Interface**
+  - Modern React-based UI with TypeScript
+  - Interactive charts and data visualization  
+  - Responsive design for all devices
+  - Real-time data updates and state management
+
 - Ingestion
   - Poll Bazaar and Auctions (later) and persist time-series snapshots.
   - Store raw auctions in object storage and roll up signals in Postgres/Timescale.
@@ -30,6 +36,8 @@ This repository is a production-minded scaffold for building a comprehensive eco
 
 ## Quickstart
 
+### Backend
+
 1) Prereqs
 - Python 3.10+
 - Postgres 14+ (TimescaleDB optional but recommended)
@@ -54,6 +62,23 @@ This repository is a production-minded scaffold for building a comprehensive eco
 
 7) Serve API
 - `uvicorn services.api.app:app --reload`
+
+### Frontend Web Interface
+
+1) Install dependencies
+- `cd frontend && npm install`
+
+2) Start development server
+- `npm run dev`
+
+3) Access the web interface at `http://localhost:3000`
+
+The frontend provides a modern, intuitive web interface for all backend functionality including:
+- Market analysis with interactive charts
+- Craft profitability analysis 
+- Strategy backtesting
+- Market simulations
+- Dashboard overview
 
 ## Roadmap (MVP → Advanced)
 

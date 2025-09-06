@@ -149,3 +149,16 @@ data/
 
 # ML model files
 models/*.pkl
+
+# Frontend Node.js
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+
+# Frontend build artifacts
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*

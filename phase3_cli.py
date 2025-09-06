@@ -16,32 +16,37 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 try:
-    from modeling.forecast.ml_forecaster import train_and_forecast_ml
+    from modeling.forecast.file_ml_forecaster import train_and_forecast_ml_from_files
     from modeling.agents.market_simulation import ScenarioEngine
-    from modeling.simulation.predictive_engine import PredictiveMarketEngine
+    from modeling.simulation.file_predictive_engine import FileBasedPredictiveMarketEngine
     PHASE3_AVAILABLE = True
 except ImportError as e:
     print(f"Phase 3 features not available: {e}")
     PHASE3_AVAILABLE = False
 
 def train_ml_model(args):
-    """Train ML model for price forecasting."""
+    """Train ML model for price forecasting using file-based approach."""
     if not PHASE3_AVAILABLE:
         print("Phase 3 ML features are not available.")
         return
     
-    print(f"Training {args.model_type} model for {args.item_id}...")
+    print(f"Training {args.model_type} model for {args.item_id} using file data...")
     
     try:
-        train_and_forecast_ml(
+        success = train_and_forecast_ml_from_files(
             product_id=args.item_id,
             model_type=args.model_type,
             horizons=tuple(args.horizons)
         )
-        print("Training completed successfully!")
+        if success:
+            print("Training completed successfully!")
+        else:
+            print("Training failed - check data availability")
         
     except Exception as e:
         print(f"Training failed: {e}")
+        import traceback
+        traceback.print_exc()
 
 def run_market_simulation(args):
     """Run market simulation."""
@@ -75,16 +80,17 @@ def run_market_simulation(args):
         print(f"Simulation failed: {e}")
 
 def run_predictive_analysis(args):
-    """Run predictive market analysis."""
+    """Run predictive market analysis using file-based approach."""
     if not PHASE3_AVAILABLE:
         print("Phase 3 predictive features are not available.")
         return
     
-    items = args.items.split(',')
+    items = [item.strip() for item in args.items.split(',')]
     print(f"Running predictive analysis for items: {items}")
+    print("Starting comprehensive market analysis...")
     
     try:
-        engine = PredictiveMarketEngine()
+        engine = FileBasedPredictiveMarketEngine()
         results = engine.run_full_analysis(items, model_type=args.model_type)
         
         if args.output:
@@ -94,20 +100,44 @@ def run_predictive_analysis(args):
             print(f"\nPredictive Analysis Summary:")
             print(f"Items analyzed: {len(items)}")
             
-            insights = results['market_insights']
-            outlook = insights['market_outlook']
-            print(f"Market outlook: {outlook.get('short_term_trend', 'unknown')}")
+            # Show training results
+            training_results = results.get('training_results', {})
+            if training_results:
+                print(f"\nModel Training Results:")
+                for item_id, result in training_results.items():
+                    horizons = result.get('horizons_trained', [])
+                    data_points = result.get('data_points', 0)
+                    print(f"  {item_id}: {len(horizons)} horizons trained, {data_points} data points")
             
-            opportunities = insights['trading_opportunities']
-            print(f"Trading opportunities found: {len(opportunities)}")
+            # Show predictions
+            predictions = results.get('ml_predictions', {})
+            if predictions:
+                print(f"\nPrice Predictions:")
+                for item_id, preds in predictions.items():
+                    print(f"  {item_id}:")
+                    for horizon, price in preds.items():
+                        print(f"    {horizon}min: {price:.2f} coins")
             
-            for i, opp in enumerate(opportunities[:3], 1):
-                print(f"  {i}. {opp['item_id']}: {opp['type']} "
-                      f"({opp['expected_return']:.1f}% return, "
-                      f"{opp['confidence']:.2f} confidence)")
+            # Show insights if available
+            insights = results.get('market_insights', {})
+            if insights:
+                outlook = insights.get('market_outlook', {})
+                if outlook:
+                    print(f"\nMarket outlook: {outlook.get('long_term_trend', 'unknown')}")
+                
+                opportunities = insights.get('trading_opportunities', [])
+                if opportunities:
+                    print(f"Trading opportunities found: {len(opportunities)}")
+                    
+                    for i, opp in enumerate(opportunities[:3], 1):
+                        print(f"  {i}. {opp['item_id']}: {opp['type']} "
+                              f"({opp['expected_return']:.1f}% return, "
+                              f"{opp['confidence']:.2f} confidence)")
     
     except Exception as e:
         print(f"Analysis failed: {e}")
+        import traceback
+        traceback.print_exc()
 
 def compare_scenarios(args):
     """Compare multiple market scenarios."""

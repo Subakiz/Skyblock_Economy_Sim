@@ -125,8 +125,8 @@ def load_config() -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def load_auction_data_from_files(data_directory: str) -> Optional[pd.DataFrame]:
-    """Load auction data from NDJSON files."""
+def get_auction_files(data_directory: str) -> List[Path]:
+    """Get list of auction data files to process."""
     data_path = Path(data_directory)
     
     # Look for auction files
@@ -140,43 +140,136 @@ def load_auction_data_from_files(data_directory: str) -> Optional[pd.DataFrame]:
     if auctions_dir.exists():
         import glob
         pattern_files = glob.glob(str(auctions_dir / "auctions_*.ndjson"))
-        potential_files.extend(pattern_files)
+        potential_files.extend([Path(f) for f in pattern_files])
     
     # Also look for ended auctions
     auctions_ended_dir = data_path / "auctions_ended"
     if auctions_ended_dir.exists():
         import glob
         ended_files = glob.glob(str(auctions_ended_dir / "auctions_ended_*.ndjson"))
-        potential_files.extend(ended_files)
+        potential_files.extend([Path(f) for f in ended_files])
     
-    records = []
-    files_found = 0
+    # Return only files that actually exist
+    return [f for f in potential_files if f.exists()]
+
+
+def load_auction_data_from_files_chunked(data_directory: str, chunksize: int = 100000):
+    """
+    Load auction data from NDJSON files in chunks for memory efficiency.
     
-    for file_path in potential_files:
-        if Path(file_path).exists():
-            files_found += 1
-            try:
-                with open(file_path, 'r') as f:
-                    for line in f:
-                        line = line.strip()
-                        if line:
-                            record = json.loads(line)
-                            records.append(record)
-            except (json.JSONDecodeError, IOError) as e:
-                print(f"Warning: Could not read {file_path}: {e}")
-                continue
+    Args:
+        data_directory: Directory containing auction data files
+        chunksize: Number of records to process at once
+        
+    Yields:
+        pd.DataFrame: Chunks of auction data
+    """
+    files = get_auction_files(data_directory)
     
-    if files_found == 0:
+    if not files:
         print(f"ERROR: No auction data files found in {data_directory}")
         print("Expected files: auctions.ndjson, auctions/auctions_*.ndjson, or auctions_ended/auctions_ended_*.ndjson")
+        return
+    
+    # Define memory-efficient dtypes
+    dtype_map = {
+        'item_id': 'category',
+        'item_name': 'string',
+        'tier': 'category',
+        'bin': 'boolean',
+        'starting_bid': 'float32',
+        'highest_bid': 'float32',
+        'sale_price': 'float32',
+        'category': 'category',
+        'seller': 'category',
+        'buyer': 'category'
+    }
+    
+    print(f"Processing {len(files)} auction data files in chunks of {chunksize}")
+    
+    chunk_records = []
+    total_processed = 0
+    
+    for file_path in files:
+        print(f"Processing file: {file_path}")
+        try:
+            with open(file_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            record = json.loads(line)
+                            chunk_records.append(record)
+                            
+                            # Yield chunk when it reaches target size
+                            if len(chunk_records) >= chunksize:
+                                df = pd.DataFrame(chunk_records)
+                                
+                                # Apply efficient dtypes
+                                for col, dtype in dtype_map.items():
+                                    if col in df.columns:
+                                        try:
+                                            if dtype == 'boolean':
+                                                df[col] = df[col].astype('boolean')
+                                            elif dtype == 'category':
+                                                df[col] = df[col].astype('category')
+                                            else:
+                                                df[col] = df[col].astype(dtype, errors='ignore')
+                                        except (ValueError, TypeError):
+                                            # Keep original dtype if conversion fails
+                                            pass
+                                
+                                total_processed += len(df)
+                                print(f"  Yielding chunk with {len(df)} records (total processed: {total_processed})")
+                                yield df
+                                chunk_records = []
+                        
+                        except json.JSONDecodeError as e:
+                            print(f"Warning: Skipping malformed JSON line in {file_path}: {e}")
+                            continue
+                            
+        except (IOError, OSError) as e:
+            print(f"Warning: Could not read {file_path}: {e}")
+            continue
+    
+    # Yield final chunk if it has records
+    if chunk_records:
+        df = pd.DataFrame(chunk_records)
+        
+        # Apply efficient dtypes
+        for col, dtype in dtype_map.items():
+            if col in df.columns:
+                try:
+                    if dtype == 'boolean':
+                        df[col] = df[col].astype('boolean')
+                    elif dtype == 'category':
+                        df[col] = df[col].astype('category')
+                    else:
+                        df[col] = df[col].astype(dtype, errors='ignore')
+                except (ValueError, TypeError):
+                    # Keep original dtype if conversion fails
+                    pass
+        
+        total_processed += len(df)
+        print(f"  Yielding final chunk with {len(df)} records (total processed: {total_processed})")
+        yield df
+    
+    print(f"Completed processing {total_processed} total auction records")
+
+
+def load_auction_data_from_files(data_directory: str) -> Optional[pd.DataFrame]:
+    """Load auction data from NDJSON files (legacy function for backward compatibility)."""
+    print("WARNING: Using legacy load function. Consider using chunked version for large datasets.")
+    
+    # Use the new chunked loader but combine all chunks for backward compatibility
+    chunks = list(load_auction_data_from_files_chunked(data_directory, chunksize=50000))
+    
+    if not chunks:
         return None
     
-    if not records:
-        print("ERROR: No valid records found in auction data files")
-        return None
-    
-    df = pd.DataFrame(records)
-    print(f"Loaded {len(records)} auction records from {files_found} file(s)")
+    # Combine all chunks
+    df = pd.concat(chunks, ignore_index=True)
+    print(f"Loaded {len(df)} auction records from {len(chunks)} chunk(s)")
     return df
 
 
@@ -232,7 +325,7 @@ def calculate_auction_features(df: pd.DataFrame) -> pd.DataFrame:
     """Calculate meaningful features for auction items."""
     
     # Ensure required columns exist
-    required_cols = ['item_id', 'item_name', 'bin', 'starting_bid', 'highest_bid', 'start_time', 'end_time']
+    required_cols = ['item_id', 'item_name', 'bin', 'starting_bid', 'highest_bid', 'sale_price', 'start_time', 'end_time']
     missing_cols = [col for col in required_cols if col not in df.columns]
     
     if missing_cols:
@@ -240,7 +333,7 @@ def calculate_auction_features(df: pd.DataFrame) -> pd.DataFrame:
         for col in missing_cols:
             if col in ['bin']:
                 df[col] = False
-            elif col in ['starting_bid', 'highest_bid']:
+            elif col in ['starting_bid', 'highest_bid', 'sale_price']:
                 df[col] = 0
             else:
                 df[col] = None
@@ -404,28 +497,167 @@ def save_auction_features_to_file(features_df: pd.DataFrame, output_path: str):
     print(f"Saved {len(records)} auction feature records to {output_path}")
 
 
+def build_auction_features_from_files_chunked(chunksize: int = 100000, overlap_hours: int = 24):
+    """
+    Build auction features from NDJSON files using memory-efficient chunked processing.
+    
+    Args:
+        chunksize: Number of records to process at once
+        overlap_hours: Hours of overlap between chunks for rolling calculations
+    """
+    cfg = load_config()
+    data_directory = cfg.get("no_database_mode", {}).get("data_directory", "data")
+    output_path = Path(data_directory) / "auction_features.ndjson"
+    
+    # Remove existing output file if it exists
+    if output_path.exists():
+        output_path.unlink()
+        print(f"Removed existing output file: {output_path}")
+    
+    print(f"Building auction features with chunked processing (chunksize={chunksize}, overlap={overlap_hours}h)")
+    
+    overlap_buffer = []  # Store records for overlap between chunks
+    chunk_count = 0
+    total_features_saved = 0
+    
+    for chunk_df in load_auction_data_from_files_chunked(data_directory, chunksize):
+        chunk_count += 1
+        print(f"\nProcessing chunk {chunk_count}...")
+        
+        # Combine with overlap buffer if available
+        if overlap_buffer:
+            print(f"  Adding {len(overlap_buffer)} overlap records from previous chunk")
+            overlap_df = pd.DataFrame(overlap_buffer)
+            chunk_df = pd.concat([overlap_df, chunk_df], ignore_index=True)
+        
+        # Calculate features for this chunk
+        print(f"  Calculating features for {len(chunk_df)} records...")
+        features_df = calculate_auction_features(chunk_df)
+        
+        # Prepare overlap buffer for next chunk
+        # Keep records from the last overlap_hours for next chunk
+        if not features_df.empty and 'ts' in features_df.columns:
+            features_df_sorted = features_df.sort_values('ts')
+            
+            # Find cutoff time for overlap
+            if len(features_df_sorted) > 0:
+                last_timestamp = features_df_sorted['ts'].iloc[-1]
+                if pd.notna(last_timestamp):
+                    cutoff_time = last_timestamp - pd.Timedelta(hours=overlap_hours)
+                    
+                    # Records after cutoff go to overlap buffer
+                    overlap_mask = features_df_sorted['ts'] >= cutoff_time
+                    overlap_buffer = features_df_sorted[overlap_mask].to_dict('records')
+                    
+                    # Only save non-overlap records to avoid duplicates
+                    if chunk_count > 1:  # Skip overlap filtering for first chunk
+                        features_to_save = features_df_sorted[~overlap_mask]
+                    else:
+                        features_to_save = features_df_sorted
+                else:
+                    features_to_save = features_df_sorted
+                    overlap_buffer = []
+            else:
+                features_to_save = features_df
+                overlap_buffer = []
+        else:
+            features_to_save = features_df
+            overlap_buffer = []
+        
+        # Stream results to file (append mode)
+        if not features_to_save.empty:
+            append_auction_features_to_file(features_to_save, str(output_path))
+            total_features_saved += len(features_to_save)
+            print(f"  Saved {len(features_to_save)} feature records to file")
+        
+        # Clear chunk from memory
+        del chunk_df, features_df
+        if 'features_to_save' in locals():
+            del features_to_save
+    
+    # Process final overlap buffer
+    if overlap_buffer and chunk_count > 1:
+        print(f"\nProcessing final overlap buffer with {len(overlap_buffer)} records...")
+        final_df = pd.DataFrame(overlap_buffer)
+        append_auction_features_to_file(final_df, str(output_path))
+        total_features_saved += len(final_df)
+        print(f"  Saved {len(final_df)} final overlap records")
+    
+    print(f"\nCompleted chunked processing:")
+    print(f"  Total chunks processed: {chunk_count}")
+    print(f"  Total feature records saved: {total_features_saved}")
+    print(f"  Output file: {output_path}")
+
+
+def append_auction_features_to_file(features_df: pd.DataFrame, output_path: str):
+    """Append auction features to NDJSON file (streaming mode)."""
+    
+    # Convert DataFrame to NDJSON format
+    records = features_df.to_dict('records')
+    
+    # Convert timestamps to ISO strings and handle NaN/None values
+    for record in records:
+        for key, value in record.items():
+            if pd.isna(value):
+                record[key] = None
+            elif isinstance(value, datetime):
+                record[key] = value.isoformat()
+            elif isinstance(value, pd.Timestamp):
+                record[key] = value.isoformat()
+            elif isinstance(value, (np.int64, np.int32)):
+                record[key] = int(value)
+            elif isinstance(value, (np.float64, np.float32)):
+                record[key] = float(value)
+    
+    # Ensure output directory exists
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    
+    # Append to file
+    with open(output_path, 'a') as f:
+        for record in records:
+            f.write(json.dumps(record) + '\n')
+
+
 def build_auction_features_from_files():
     """Build auction features from NDJSON files in no-database mode."""
     cfg = load_config()
     data_directory = cfg.get("no_database_mode", {}).get("data_directory", "data")
     
-    # Load raw auction data
-    print("Loading auction data from files...")
-    df = load_auction_data_from_files(data_directory)
-    
-    if df is None:
-        print("ERROR: Could not load auction data from files")
+    # Check if files exist and estimate size
+    files = get_auction_files(data_directory)
+    if not files:
+        print("ERROR: No auction data files found")
         return
     
-    # Calculate auction-specific features
-    print("Calculating auction features...")
-    features_df = calculate_auction_features(df)
+    # Estimate total file size
+    total_size = sum(f.stat().st_size for f in files if f.exists())
+    total_size_mb = total_size / (1024 * 1024)
     
-    # Save to output file
-    output_path = Path(data_directory) / "auction_features.ndjson"
-    save_auction_features_to_file(features_df, str(output_path))
+    print(f"Found {len(files)} auction data files ({total_size_mb:.1f} MB total)")
     
-    print("Auction features built from files.")
+    # Use chunked processing for large datasets
+    if total_size_mb > 100:  # Use chunked processing for files > 100MB
+        print(f"Using memory-efficient chunked processing for large dataset")
+        build_auction_features_from_files_chunked(chunksize=100000, overlap_hours=24)
+    else:
+        print(f"Using legacy processing for small dataset")
+        # Load raw auction data
+        print("Loading auction data from files...")
+        df = load_auction_data_from_files(data_directory)
+        
+        if df is None:
+            print("ERROR: Could not load auction data from files")
+            return
+        
+        # Calculate auction-specific features
+        print("Calculating auction features...")
+        features_df = calculate_auction_features(df)
+        
+        # Save to output file
+        output_path = Path(data_directory) / "auction_features.ndjson"
+        save_auction_features_to_file(features_df, str(output_path))
+        
+        print("Auction features built from files.")
 
 
 def load_auction_features_from_file(data_directory: str, item_ids: List[str] = None) -> Optional[pd.DataFrame]:

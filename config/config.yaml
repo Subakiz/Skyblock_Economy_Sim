@@ -70,6 +70,8 @@ auction_sniper:
   profit_threshold: 100000
   # Minimum auction count for items to be in watchlist
   min_auction_count: 50
+  # Minimum samples required for liquidity analysis
+  min_liquidity_samples: 10
   # Hunter task interval (high frequency scanning)
   hunter_interval_seconds: 2
   # Analyst task interval (full market analysis)

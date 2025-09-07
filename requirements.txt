@@ -4,6 +4,7 @@ PyYAML>=6.0
 fastapi>=0.100.0
 uvicorn>=0.23.0
 pandas>=2.0.0
+pyarrow>=14.0.0
 pydantic>=2.0.0
 # Phase 3: Advanced ML and Agent-Based Modeling
 lightgbm>=4.0.0

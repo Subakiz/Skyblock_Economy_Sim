@@ -15,6 +15,9 @@ from pathlib import Path
 from typing import Dict, Set, List, Optional, Any, Tuple
 import re
 
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -31,6 +34,9 @@ class AuctionSniper(commands.Cog):
     - Hunter: High-frequency scanning (2s) for quick snipes
     - Analyst: Low-frequency analysis (90s) for market intelligence
     """
+    
+    # Parquet data directory
+    PARQUET_DATA_PATH = Path("data/auction_history")
     
     def __init__(self, bot):
         self.bot = bot
@@ -62,6 +68,9 @@ class AuctionSniper(commands.Cog):
         # Data directories
         self.data_dir = Path("data/sniper")
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create Parquet data directory
+        self.PARQUET_DATA_PATH.mkdir(parents=True, exist_ok=True)
         
         # Load persisted data
         self._load_persisted_data()
@@ -254,11 +263,56 @@ class AuctionSniper(commands.Cog):
             
             self.logger.info(f"Collected {len(all_auctions)} total auctions from {page} pages")
             
-            # Analyze market data
+            # Analyze market data - update watchlist first
             await self._update_watchlist(all_auctions)
-            await self._update_fmv_data(all_auctions)
             
-            # Persist data
+            # Implement Parquet Pipeline
+            scan_timestamp = datetime.now(timezone.utc)
+            
+            # Prune: Extract essential fields
+            auction_records = []
+            for auction in all_auctions:
+                try:
+                    # Extract essential fields only
+                    record = {
+                        'uuid': auction.get('uuid', ''),
+                        'item_name': auction.get('item_name', '').strip(),
+                        'price': float(auction.get('starting_bid', 0)) if auction.get('bin') else float(auction.get('highest_bid_amount', 0)),
+                        'tier': auction.get('tier', ''),
+                        'scan_timestamp': scan_timestamp
+                    }
+                    
+                    # Only include records with valid data
+                    if record['item_name'] and record['price'] > 0:
+                        auction_records.append(record)
+                        
+                except (ValueError, TypeError) as e:
+                    continue  # Skip invalid records
+            
+            if auction_records:
+                # Structure: Convert to pandas DataFrame
+                df = pd.DataFrame(auction_records)
+                
+                # Partition: Create year, month, and day columns
+                df['year'] = df['scan_timestamp'].dt.year
+                df['month'] = df['scan_timestamp'].dt.month  
+                df['day'] = df['scan_timestamp'].dt.day
+                
+                # Write: Save to partitioned Parquet dataset
+                table = pa.Table.from_pandas(df)
+                pq.write_to_dataset(
+                    table,
+                    root_path=str(self.PARQUET_DATA_PATH),
+                    partition_cols=['year', 'month', 'day'],
+                    existing_data_behavior='overwrite_or_ignore'
+                )
+                
+                self.logger.info(f"Saved {len(auction_records)} auction records to Parquet dataset")
+            
+            # Update market values from Parquet data
+            self.update_market_values_from_parquet()
+            
+            # Persist watchlist data only (FMV now comes from Parquet analysis)
             self._save_persisted_data()
             
             analysis_time = time.time() - start_time
@@ -332,6 +386,50 @@ class AuctionSniper(commands.Cog):
         
         except Exception as e:
             self.logger.error(f"Failed to update FMV data: {e}")
+    
+    def update_market_values_from_parquet(self):
+        """Update market values cache from Parquet dataset."""
+        try:
+            # Check if Parquet data exists
+            if not self.PARQUET_DATA_PATH.exists() or not any(self.PARQUET_DATA_PATH.iterdir()):
+                self.logger.debug("No Parquet data found for market analysis")
+                return
+            
+            # Load Parquet dataset
+            dataset = pq.ParquetDataset(self.PARQUET_DATA_PATH)
+            df = dataset.read().to_pandas()
+            
+            if df.empty:
+                self.logger.debug("Empty Parquet dataset")
+                return
+            
+            # Calculate median prices for watchlist items
+            watchlist_items = df[df['item_name'].isin(self.auction_watchlist)]
+            
+            if watchlist_items.empty:
+                self.logger.debug("No watchlist items found in Parquet data")
+                return
+            
+            # Group by item_name and calculate median price
+            median_prices = watchlist_items.groupby('item_name')['price'].median()
+            
+            # Update fmv_data cache with new values
+            for item_name, median_price in median_prices.items():
+                item_count = len(watchlist_items[watchlist_items['item_name'] == item_name])
+                
+                # Only update if we have sufficient data points
+                if item_count >= 3:
+                    self.fmv_data[item_name] = {
+                        "fmv": float(median_price),
+                        "median": float(median_price),
+                        "samples": item_count,
+                        "updated_at": datetime.now(timezone.utc).isoformat()
+                    }
+            
+            self.logger.debug(f"Updated market values from Parquet for {len(median_prices)} items")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to update market values from Parquet: {e}")
     
     async def _verify_snipe(self, auction: Dict[str, Any]) -> bool:
         """

@@ -30,8 +30,9 @@ sys.path.insert(0, str(project_root))
 
 # Import existing project modules
 try:
-    from ingestion.auction_collector import run as auction_collector_run
-    from ingestion.bazaar_collector import run as bazaar_collector_run
+    # Data collection is now handled by standalone ingestion service
+    # from ingestion.auction_collector import run as auction_collector_run
+    # from ingestion.bazaar_collector import run as bazaar_collector_run
     from modeling.features.feature_pipeline import build_features
     from phase3_cli import run_predictive_analysis, train_ml_model, check_status, PHASE3_AVAILABLE
     from modeling.forecast.file_ml_forecaster import train_and_forecast_ml_from_files
@@ -79,8 +80,10 @@ class SkyBlockEconomyBot(commands.Bot):
         super().__init__(command_prefix='!', intents=intents)
         self.config = load_config()
         self.start_time = datetime.now(timezone.utc)
-        self.auction_collector_task = None
-        self.bazaar_collector_task = None
+        
+        # Data collection is now handled by standalone ingestion service
+        # self.auction_collector_task = None
+        # self.bazaar_collector_task = None
         
         self.last_feature_build = None
         
@@ -95,9 +98,11 @@ class SkyBlockEconomyBot(commands.Bot):
         
         # Start background tasks
         if IMPORTS_SUCCESS:
-            await self.start_data_collectors()
+            # Data collection is now handled by standalone ingestion service
+            # await self.start_data_collectors()
             self.feature_builder.start()
             logger.info("Started feature building background task")
+            logger.info("Note: Data collection is handled by separate ingestion service")
         else:
             logger.warning("Skipped background tasks due to import failures")
         
@@ -110,30 +115,30 @@ class SkyBlockEconomyBot(commands.Bot):
         logger.info(f'{self.user} has logged in and is ready!')
         logger.info(f'Bot is in {len(self.guilds)} guilds')
 
-    # --- NEW METHOD TO START DATA COLLECTORS ---
-    async def start_data_collectors(self):
-        """Starts the auction and bazaar data collectors in background threads."""
-        if not os.getenv("HYPIXEL_API_KEY"):
-            logger.warning("HYPIXEL_API_KEY not set. Skipping data collection.")
-            return
-
-        try:
-            # Start auction collector in background
-            logger.info("Starting auction collector in background...")
-            self.auction_collector_task = asyncio.create_task(
-                asyncio.to_thread(auction_collector_run)
-            )
-            
-            # Start bazaar collector in background  
-            logger.info("Starting bazaar collector in background...")
-            self.bazaar_collector_task = asyncio.create_task(
-                asyncio.to_thread(bazaar_collector_run)
-            )
-            
-            logger.info("Data collection tasks have been launched.")
-            
-        except Exception as e:
-            logger.error(f"Failed to start data collectors: {e}")
+    # Data collection is now handled by standalone ingestion service
+    # async def start_data_collectors(self):
+    #     """Starts the auction and bazaar data collectors in background threads."""
+    #     if not os.getenv("HYPIXEL_API_KEY"):
+    #         logger.warning("HYPIXEL_API_KEY not set. Skipping data collection.")
+    #         return
+    # 
+    #     try:
+    #         # Start auction collector in background
+    #         logger.info("Starting auction collector in background...")
+    #         self.auction_collector_task = asyncio.create_task(
+    #             asyncio.to_thread(auction_collector_run)
+    #         )
+    #         
+    #         # Start bazaar collector in background  
+    #         logger.info("Starting bazaar collector in background...")
+    #         self.bazaar_collector_task = asyncio.create_task(
+    #             asyncio.to_thread(bazaar_collector_run)
+    #         )
+    #         
+    #         logger.info("Data collection tasks have been launched.")
+    #         
+    #     except Exception as e:
+    #         logger.error(f"Failed to start data collectors: {e}")
 
     @tasks.loop(hours=1)
     async def feature_builder(self):
@@ -152,30 +157,31 @@ class SkyBlockEconomyBot(commands.Bot):
             logger.error(f"Feature building failed: {e}")
             # Continue running despite the error
     
-    async def shutdown_data_collectors(self):
-        """Gracefully shut down data collection tasks."""
-        logger.info("Shutting down data collection tasks...")
-        
-        if self.auction_collector_task and not self.auction_collector_task.done():
-            self.auction_collector_task.cancel()
-            try:
-                await self.auction_collector_task
-            except asyncio.CancelledError:
-                logger.info("Auction collector task cancelled")
-        
-        if self.bazaar_collector_task and not self.bazaar_collector_task.done():
-            self.bazaar_collector_task.cancel()
-            try:
-                await self.bazaar_collector_task
-            except asyncio.CancelledError:
-                logger.info("Bazaar collector task cancelled")
-        
-        # Stop feature builder task
-        if self.feature_builder.is_running():
-            self.feature_builder.cancel()
-            logger.info("Feature builder task cancelled")
-        
-        logger.info("Data collection shutdown complete")
+    # Data collection shutdown is now handled by standalone ingestion service
+    # async def shutdown_data_collectors(self):
+    #     """Gracefully shut down data collection tasks."""
+    #     logger.info("Shutting down data collection tasks...")
+    #     
+    #     if self.auction_collector_task and not self.auction_collector_task.done():
+    #         self.auction_collector_task.cancel()
+    #         try:
+    #             await self.auction_collector_task
+    #         except asyncio.CancelledError:
+    #             logger.info("Auction collector task cancelled")
+    #     
+    #     if self.bazaar_collector_task and not self.bazaar_collector_task.done():
+    #         self.bazaar_collector_task.cancel()
+    #         try:
+    #             await self.bazaar_collector_task
+    #         except asyncio.CancelledError:
+    #             logger.info("Bazaar collector task cancelled")
+    #     
+    #     # Stop feature builder task
+    #     if self.feature_builder.is_running():
+    #         self.feature_builder.cancel()
+    #         logger.info("Feature builder task cancelled")
+    #     
+    #     logger.info("Data collection shutdown complete")
 
 # Create bot instance
 bot = SkyBlockEconomyBot()

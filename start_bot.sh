@@ -1,6 +1,9 @@
 #!/bin/bash
 #
-# Launch script for SkyBlock Economy Discord Bot
+# Master Launch Script for SkyBlock Economy Two-Process Application
+# Implements the mandated two-process architecture:
+# 1. Background Data Ingestion Service (data_ingestion/run_ingestion.py)
+# 2. Foreground Discord Bot (bot.py)
 #
 
 set -e
@@ -9,10 +12,43 @@ set -e
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}SkyBlock Economy Discord Bot Launcher${NC}"
-echo "========================================="
+# PID file for ingestion service
+INGESTION_PID_FILE="logs/ingestion_service.pid"
+
+echo -e "${GREEN}SkyBlock Economy Two-Process Application Launcher${NC}"
+echo "================================================================"
+echo -e "${BLUE}Production-Grade Hypixel Market Analysis & Sniping System${NC}"
+echo "================================================================"
+
+# Cleanup function to kill ingestion service on exit
+cleanup() {
+    echo ""
+    echo -e "${YELLOW}Shutting down application...${NC}"
+    
+    # Kill ingestion service if running
+    if [[ -f "$INGESTION_PID_FILE" ]]; then
+        INGESTION_PID=$(cat "$INGESTION_PID_FILE")
+        if ps -p "$INGESTION_PID" > /dev/null 2>&1; then
+            echo -e "${YELLOW}Stopping data ingestion service (PID: $INGESTION_PID)...${NC}"
+            kill "$INGESTION_PID" 2>/dev/null || true
+            sleep 2
+            # Force kill if still running
+            if ps -p "$INGESTION_PID" > /dev/null 2>&1; then
+                echo -e "${RED}Force killing ingestion service...${NC}"
+                kill -9 "$INGESTION_PID" 2>/dev/null || true
+            fi
+        fi
+        rm -f "$INGESTION_PID_FILE"
+    fi
+    
+    echo -e "${GREEN}Application shutdown complete.${NC}"
+}
+
+# Set trap for clean shutdown
+trap cleanup EXIT INT TERM
 
 # Check if we're in the right directory
 if [[ ! -f "bot.py" ]]; then
@@ -43,18 +79,20 @@ if [[ -z "$DISCORD_BOT_TOKEN" ]]; then
     fi
 fi
 
-# Check for Hypixel API key
+# Check for Hypixel API key (required for data ingestion)
 if [[ -z "$HYPIXEL_API_KEY" ]]; then
-    echo -e "${YELLOW}Note: HYPIXEL_API_KEY not set - data collection will be limited${NC}"
+    echo -e "${RED}Error: HYPIXEL_API_KEY environment variable not set${NC}"
+    echo "The data ingestion service requires a Hypixel API key."
+    echo "Please set your Hypixel API key:"
+    echo "export HYPIXEL_API_KEY=\"your_key_here\""
+    exit 1
 fi
 
 # Check dependencies
 echo "Checking dependencies..."
 python3 -c "
 import sys
-# --- CORRECTED PACKAGE NAME ---
-required_packages = ['discord', 'pandas', 'yaml', 'numpy', 'lightgbm']
-# --- END CORRECTION ---
+required_packages = ['discord', 'pandas', 'yaml', 'numpy', 'pyarrow']
 missing = []
 
 for pkg in required_packages:
@@ -73,7 +111,7 @@ else:
 
 # Create necessary directories
 echo "Setting up directories..."
-mkdir -p data models logs
+mkdir -p data logs data/auction_history data/bazaar_history
 
 # Check configuration
 if [[ ! -f "config/config.yaml" ]]; then
@@ -81,15 +119,46 @@ if [[ ! -f "config/config.yaml" ]]; then
     exit 1
 fi
 
+# Check if data ingestion entry point exists
+if [[ ! -f "data_ingestion/run_ingestion.py" ]]; then
+    echo -e "${RED}Error: data_ingestion/run_ingestion.py not found${NC}"
+    exit 1
+fi
+
 echo -e "${GREEN}✅ Pre-flight checks passed${NC}"
 echo ""
 
-# Run the bot
-echo -e "${GREEN}Starting Discord bot...${NC}"
-echo "Press Ctrl+C to stop"
+# Phase 1: Start Data Ingestion Service (Background Process)
+echo -e "${BLUE}Phase 1: Starting Data Ingestion Service...${NC}"
+nohup python3 data_ingestion/run_ingestion.py > logs/ingestion.log 2>&1 &
+INGESTION_PID=$!
+echo $INGESTION_PID > "$INGESTION_PID_FILE"
+
+echo -e "${GREEN}✅ Data ingestion service started (PID: $INGESTION_PID)${NC}"
+echo -e "   Logs: ${YELLOW}logs/ingestion.log${NC}"
+echo -e "   Features: Canonical item normalization, auction/bazaar loops, Parquet output"
 echo ""
 
-# Add timestamp to logs
+# Give ingestion service a moment to start
+sleep 3
+
+# Verify ingestion service is running
+if ! ps -p "$INGESTION_PID" > /dev/null 2>&1; then
+    echo -e "${RED}Error: Data ingestion service failed to start${NC}"
+    echo "Check logs/ingestion.log for details"
+    exit 1
+fi
+
+# Phase 2: Start Discord Bot (Foreground Process)
+echo -e "${BLUE}Phase 2: Starting Discord Bot...${NC}"
+echo -e "   Features: Auction sniping, market intelligence, read-only consumer"
+echo -e "   Hunter task: Page 0 scanning every 2 seconds"
+echo -e "   Analyst task: Market intelligence updates every 60 seconds"
+echo ""
+echo -e "${GREEN}Press Ctrl+C to stop both processes${NC}"
+echo "================================================================"
+
+# Add timestamp to logs and run the bot
 exec python3 bot.py 2>&1 | while IFS= read -r line; do
-    echo "$(date '+%Y-%m-%d %H:%M:%S') $line"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [BOT] $line"
 done

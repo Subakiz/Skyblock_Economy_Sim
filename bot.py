@@ -209,16 +209,42 @@ async def status_command(interaction: discord.Interaction):
         bazaar_records = 0
         
         if data_dir.exists():
-            auction_file = data_dir / "auctions.ndjson"
-            bazaar_file = data_dir / "bazaar_snapshots.ndjson"
+            # Check for Parquet datasets (new architecture)
+            auction_parquet_dir = data_dir / "auction_history"
+            bazaar_parquet_dir = data_dir / "bazaar_history"
             
-            if auction_file.exists():
-                with open(auction_file, 'r') as f:
-                    auction_records = sum(1 for _ in f)
+            # Count auction records from Parquet
+            if auction_parquet_dir.exists() and any(auction_parquet_dir.rglob("*.parquet")):
+                try:
+                    import pyarrow.parquet as pq
+                    parquet_files = list(auction_parquet_dir.rglob("*.parquet"))
+                    auction_records = sum(pq.read_table(f).num_rows for f in parquet_files[:10])  # Sample recent files
+                except Exception as e:
+                    logger.debug(f"Error reading auction Parquet data: {e}")
+                    auction_records = len(list(auction_parquet_dir.rglob("*.parquet"))) * 1000  # Estimate
             
-            if bazaar_file.exists():
-                with open(bazaar_file, 'r') as f:
-                    bazaar_records = sum(1 for _ in f)
+            # Count bazaar records from Parquet
+            if bazaar_parquet_dir.exists() and any(bazaar_parquet_dir.rglob("*.parquet")):
+                try:
+                    import pyarrow.parquet as pq
+                    parquet_files = list(bazaar_parquet_dir.rglob("*.parquet"))
+                    bazaar_records = sum(pq.read_table(f).num_rows for f in parquet_files[:10])  # Sample recent files
+                except Exception as e:
+                    logger.debug(f"Error reading bazaar Parquet data: {e}")
+                    bazaar_records = len(list(bazaar_parquet_dir.rglob("*.parquet"))) * 100  # Estimate
+            
+            # Fallback to old NDJSON files if Parquet doesn't exist
+            if auction_records == 0:
+                auction_file = data_dir / "auctions.ndjson"
+                if auction_file.exists():
+                    with open(auction_file, 'r') as f:
+                        auction_records = sum(1 for _ in f)
+            
+            if bazaar_records == 0:
+                bazaar_file = data_dir / "bazaar_snapshots.ndjson"
+                if bazaar_file.exists():
+                    with open(bazaar_file, 'r') as f:
+                        bazaar_records = sum(1 for _ in f)
 
         # Check model directory
         model_dir = Path("models")
@@ -919,23 +945,60 @@ async def plot_command(interaction: discord.Interaction, item_name: str):
         from pathlib import Path
         
         data_dir = Path("data")
-        bazaar_files = list(data_dir.glob("bazaar*.ndjson"))
+        bazaar_parquet_dir = data_dir / "bazaar_history"
         
-        if not bazaar_files:
-            await interaction.followup.send(f"❌ No bazaar data found for plotting. Data collection may not be running.")
-            return
-        
-        # Load and filter data
-        dfs = []
-        for file in bazaar_files[:5]:  # Limit to recent files
+        # Check for Parquet data first (new architecture)
+        if bazaar_parquet_dir.exists() and any(bazaar_parquet_dir.rglob("*.parquet")):
             try:
-                df = pd.read_json(file, lines=True)
-                if 'product_id' in df.columns:
-                    item_data = df[df['product_id'] == item_name]
-                    if not item_data.empty:
-                        dfs.append(item_data)
-            except:
-                continue
+                import pyarrow.parquet as pq
+                
+                # Read recent Parquet files
+                parquet_files = list(bazaar_parquet_dir.rglob("*.parquet"))
+                parquet_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)  # Most recent first
+                
+                dfs = []
+                for file in parquet_files[:5]:  # Limit to recent files
+                    try:
+                        df = pq.read_table(file).to_pandas()
+                        if 'product_id' in df.columns:
+                            item_data = df[df['product_id'] == item_name]
+                            if not item_data.empty:
+                                dfs.append(item_data)
+                    except Exception as e:
+                        logger.debug(f"Error reading Parquet file {file}: {e}")
+                        continue
+                        
+                if not dfs:
+                    # Try partial matches if exact match fails
+                    for file in parquet_files[:5]:
+                        try:
+                            df = pq.read_table(file).to_pandas()
+                            if 'product_id' in df.columns:
+                                # Case-insensitive partial match
+                                item_data = df[df['product_id'].str.contains(item_name, case=False, na=False)]
+                                if not item_data.empty:
+                                    dfs.append(item_data)
+                                    break  # Found data, stop searching
+                        except Exception as e:
+                            logger.debug(f"Error reading Parquet file {file}: {e}")
+                            continue
+                            
+            except ImportError:
+                await interaction.followup.send("❌ PyArrow is required for reading Parquet data but is not available.")
+                return
+        
+        # Fallback to old NDJSON files if Parquet data not available
+        if not dfs:
+            bazaar_files = list(data_dir.glob("bazaar*.ndjson"))
+            for file in bazaar_files[:5]:  # Limit to recent files
+                try:
+                    df = pd.read_json(file, lines=True)
+                    if 'product_id' in df.columns:
+                        item_data = df[df['product_id'] == item_name]
+                        if not item_data.empty:
+                            dfs.append(item_data)
+                except:
+                    continue
         
         if not dfs:
             # Generate a sample chart to demonstrate functionality

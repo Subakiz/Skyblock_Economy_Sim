@@ -21,6 +21,7 @@ import pyarrow.parquet as pq
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
+import aiofiles
 
 # Import project modules
 from ingestion.common.hypixel_client import HypixelClient
@@ -134,22 +135,23 @@ class AuctionSniper(commands.Cog):
         except Exception as e:
             self.logger.error(f"Failed to load saved config: {e}")
     
-    def _save_persisted_data(self):
-        """Save watchlist and FMV data to disk."""
+    async def _save_persisted_data(self):
+        """Save watchlist and FMV data to disk asynchronously."""
         try:
             # Save watchlist
             watchlist_file = self.data_dir / "auction_watchlist.json"
-            with open(watchlist_file, "w") as f:
-                json.dump({
-                    "items": list(self.auction_watchlist),
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                    "count": len(self.auction_watchlist)
-                }, f, indent=2)
+            watchlist_data = {
+                "items": list(self.auction_watchlist),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "count": len(self.auction_watchlist)
+            }
+            async with aiofiles.open(watchlist_file, "w") as f:
+                await f.write(json.dumps(watchlist_data, indent=2))
             
             # Save FMV data
             fmv_file = self.data_dir / "fmv_cache.json"
-            with open(fmv_file, "w") as f:
-                json.dump(self.fmv_data, f, indent=2)
+            async with aiofiles.open(fmv_file, "w") as f:
+                await f.write(json.dumps(self.fmv_data, indent=2))
             
             self.logger.debug("Saved persisted data to disk")
         
@@ -180,14 +182,14 @@ class AuctionSniper(commands.Cog):
             
             self.logger.info(f"Started sniper tasks: Hunter ({hunter_interval}s), Intelligence ({intelligence_interval}s)")
     
-    def cog_unload(self):
+    async def cog_unload(self):
         """Clean shutdown of tasks."""
         self.logger.info("Shutting down auction sniper tasks...")
         if self.high_frequency_snipe_scan.is_running():
             self.high_frequency_snipe_scan.cancel()
         if self.update_market_intelligence.is_running():
             self.update_market_intelligence.cancel()
-        self._save_persisted_data()
+        await self._save_persisted_data()
     
     @tasks.loop(seconds=2)  # Default, will be updated from config
     async def high_frequency_snipe_scan(self):
@@ -270,7 +272,7 @@ class AuctionSniper(commands.Cog):
                 self.update_market_values_from_parquet()
                 
                 # Persist updated data
-                self._save_persisted_data()
+                await self._save_persisted_data()
                 
                 processing_time = time.time() - start_time
                 self.logger.info(f"Market intelligence updated: {len(self.auction_watchlist)} watchlist items, "
@@ -620,8 +622,11 @@ class AuctionSniper(commands.Cog):
                               profit_threshold: Optional[int] = None, 
                               min_auction_count: Optional[int] = None):
         """Configure sniper parameters."""
+        # Immediately defer the response to avoid timeout
+        await interaction.response.defer()
+        
         if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ You need Administrator permissions to configure the sniper.", ephemeral=True)
+            await interaction.followup.send("❌ You need Administrator permissions to configure the sniper.", ephemeral=True)
             return
         
         if profit_threshold is not None:
@@ -638,7 +643,7 @@ class AuctionSniper(commands.Cog):
         embed.add_field(name="📊 Min Auction Count", value=str(self.min_auction_count), inline=True)
         embed.add_field(name="📝 Watchlist Size", value=str(len(self.auction_watchlist)), inline=True)
         
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
         self.logger.info(f"Sniper configuration updated: profit_threshold={self.profit_threshold}, min_auction_count={self.min_auction_count}")
     
     @app_commands.command(name="sniper_status", description="Check sniper status and statistics")
@@ -672,7 +677,7 @@ class AuctionSniper(commands.Cog):
         await interaction.response.send_message(embed=embed)
     
     async def _save_sniper_config(self):
-        """Save sniper configuration to disk."""
+        """Save sniper configuration to disk asynchronously."""
         try:
             config_file = self.data_dir / "sniper_config.json"
             config_data = {
@@ -682,8 +687,8 @@ class AuctionSniper(commands.Cog):
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }
             
-            with open(config_file, "w") as f:
-                json.dump(config_data, f, indent=2)
+            async with aiofiles.open(config_file, "w") as f:
+                await f.write(json.dumps(config_data, indent=2))
             
             self.logger.debug("Saved sniper configuration")
         

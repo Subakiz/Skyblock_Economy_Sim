@@ -1,0 +1,8 @@
+Defaulting to user installation because normal site-packages is not writeable
+Collecting aiofiles
+  Downloading aiofiles-24.1.0-py3-none-any.whl.metadata
+     - 10.7 kB 17.4 MB/s 0:00:00
+Downloading aiofiles-24.1.0-py3-none-any.whl
+   - 15.9 kB 179.2 MB/s 0:00:00
+Installing collected packages: aiofiles
+Successfully installed aiofiles-24.1.0

@@ -63,3 +63,16 @@ discord_bot:
   feature_build_interval_hours: 1
   admin_roles: ["Administrator", "Bot Admin"]
   max_analysis_items: 5
+
+# Auction Sniper Configuration
+auction_sniper:
+  # Default profit threshold in coins
+  profit_threshold: 100000
+  # Minimum auction count for items to be in watchlist
+  min_auction_count: 50
+  # Hunter task interval (high frequency scanning)
+  hunter_interval_seconds: 2
+  # Analyst task interval (full market analysis)
+  analyst_interval_seconds: 90
+  # Maximum price multiplier above FMV to consider
+  max_fmv_multiplier: 1.1

@@ -14,7 +14,7 @@ from typing import Dict, Any, Optional, List
 
 import discord
 from discord import app_commands
-from discord.ext import tasks
+from discord.ext import commands, tasks
 import yaml
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
@@ -72,12 +72,11 @@ def load_config() -> Dict[str, Any]:
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
 
-class SkyBlockEconomyBot(discord.Client):
+class SkyBlockEconomyBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
-        super().__init__(intents=intents)
-        self.tree = app_commands.CommandTree(self)
+        super().__init__(command_prefix='!', intents=intents)
         self.config = load_config()
         self.start_time = datetime.now(timezone.utc)
         self.auction_collector_task = None
@@ -87,6 +86,13 @@ class SkyBlockEconomyBot(discord.Client):
         
     async def setup_hook(self):
         """Set up the bot after login."""
+        # Load auction sniper cog
+        try:
+            await self.load_extension("cogs.auction_sniper")
+            logger.info("Loaded auction sniper cog")
+        except Exception as e:
+            logger.error(f"Failed to load auction sniper cog: {e}")
+        
         # Start background tasks
         if IMPORTS_SUCCESS:
             await self.start_data_collectors()

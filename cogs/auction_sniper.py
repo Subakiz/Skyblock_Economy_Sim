@@ -345,13 +345,27 @@ class AuctionSniper(commands.Cog):
             if price <= 0:
                 return False
             
+            # Safety check: Skip extremely expensive items (> 1B coins) to avoid false positives
+            if price > 1_000_000_000:
+                return False
+            
             # Manipulation Check: Compare against FMV
             fmv_info = self.fmv_data.get(item_name)
             if not fmv_info:
                 return False  # No FMV data available
             
             fmv = fmv_info.get("fmv", 0)
-            if price > fmv * 1.1:  # Price is significantly above FMV
+            samples = fmv_info.get("samples", 0)
+            
+            # Require sufficient data points for reliability
+            if samples < 5:
+                return False
+            
+            # Use configurable multiplier from config
+            sniper_config = self.config.get("auction_sniper", {})
+            max_multiplier = sniper_config.get("max_fmv_multiplier", 1.1)
+            
+            if price > fmv * max_multiplier:
                 return False
             
             # Attribute Check: Parse NBT for critical attributes
@@ -365,8 +379,13 @@ class AuctionSniper(commands.Cog):
             if estimated_profit < self.profit_threshold:
                 return False
             
+            # Additional safety: Ensure profit margin is reasonable (at least 5%)
+            profit_margin = estimated_profit / price
+            if profit_margin < 0.05:
+                return False
+            
             self.logger.info(f"Valid snipe found: {item_name} at {price:,.0f} coins "
-                           f"(FMV: {fmv:,.0f}, Profit: {estimated_profit:,.0f})")
+                           f"(FMV: {fmv:,.0f}, Profit: {estimated_profit:,.0f}, Margin: {profit_margin:.1%})")
             return True
         
         except Exception as e:
@@ -379,29 +398,72 @@ class AuctionSniper(commands.Cog):
         Parse NBT data to verify critical attributes.
         """
         try:
-            # For now, implement basic checks
-            # This could be expanded to parse actual NBT data
             item_name = auction.get("item_name", "")
             item_lore = auction.get("item_lore", "")
             
-            # Basic attribute requirements
-            if any(weapon_type in item_name.upper() for weapon_type in 
-                   ["SWORD", "BOW", "HYPERION", "VALKYRIE", "SCYLLA"]):
-                # Check for reforge or ultimate enchants in lore
-                if "Ultimate" in item_lore or any(reforge in item_lore for reforge in 
-                    ["Sharp", "Heroic", "Legendary", "Fabled", "Withered"]):
-                    return True
-                return False  # Weapon without good attributes
+            # Convert to uppercase for consistent matching
+            item_name_upper = item_name.upper()
             
-            if any(armor_type in item_name.upper() for armor_type in 
-                   ["CHESTPLATE", "LEGGINGS", "HELMET", "BOOTS"]):
-                # Check for stars or reforge
-                if "⭐" in item_lore or any(reforge in item_lore for reforge in
-                    ["Ancient", "Renowned", "Spiked", "Reinforced"]):
+            # Weapon attribute checks
+            weapon_keywords = ["SWORD", "BOW", "HYPERION", "VALKYRIE", "SCYLLA", "NECRON_BLADE", 
+                             "GIANTS_SWORD", "LIVID_DAGGER", "SHADOW_FURY", "ASPECT_OF_THE"]
+            if any(weapon in item_name_upper for weapon in weapon_keywords):
+                # Check for ultimate enchantments
+                ultimate_enchants = ["Ultimate Enchantment", "Ultimate Wise", "Ultimate Fatal Tempo", 
+                                   "Ultimate Combo", "Ultimate Rend", "Ultimate Soul Eater"]
+                if any(ult in item_lore for ult in ultimate_enchants):
                     return True
-                return False  # Armor without good attributes
+                
+                # Check for good reforges
+                good_reforges = ["Sharp", "Heroic", "Legendary", "Fabled", "Withered", "Dirty", 
+                               "Fast", "Gentle", "Odd", "Smart", "Silky"]
+                if any(reforge in item_lore for reforge in good_reforges):
+                    return True
+                
+                # For high-value weapons, require good attributes
+                expensive_weapons = ["HYPERION", "VALKYRIE", "SCYLLA", "NECRON_BLADE", "GIANTS_SWORD"]
+                if any(weapon in item_name_upper for weapon in expensive_weapons):
+                    return False  # Expensive weapon without good attributes
+                
+                # For other weapons, be less strict
+                return True
             
-            # For other items, accept by default
+            # Armor attribute checks
+            armor_keywords = ["CHESTPLATE", "LEGGINGS", "HELMET", "BOOTS", "_HELMET", "_CHESTPLATE", 
+                            "_LEGGINGS", "_BOOTS", "NECRON_", "STORM_", "GOLDOR_", "MAXOR_"]
+            if any(armor in item_name_upper for armor in armor_keywords):
+                # Check for stars (dungeon upgrades)
+                if "⭐" in item_lore or "✪" in item_lore:
+                    return True
+                
+                # Check for good reforges
+                good_armor_reforges = ["Ancient", "Renowned", "Spiked", "Reinforced", "Loving", 
+                                     "Ridiculous", "Giant", "Smart", "Wise", "Perfect"]
+                if any(reforge in item_lore for reforge in good_armor_reforges):
+                    return True
+                
+                # Check for high-level enchantments
+                high_enchants = ["Protection VII", "Growth VII", "Sugar Rush III", "True Protection"]
+                if any(enchant in item_lore for enchant in high_enchants):
+                    return True
+                
+                # For expensive armor sets, be more strict
+                expensive_armor = ["NECRON_", "STORM_", "GOLDOR_", "MAXOR_", "SUPERIOR_DRAGON"]
+                if any(armor in item_name_upper for armor in expensive_armor):
+                    return False  # Expensive armor without good attributes
+            
+            # Special item checks
+            special_items = ["PET", "RUNE", "UPGRADE_STONE", "REFORGE_STONE"]
+            if any(special in item_name_upper for special in special_items):
+                # For pets, check level and tier
+                if "PET" in item_name_upper:
+                    legendary_pet_indicators = ["[Lvl", "LEGENDARY"]
+                    return any(indicator in item_lore for indicator in legendary_pet_indicators)
+                
+                # For runes and stones, generally accept
+                return True
+            
+            # For other items (materials, etc.), accept by default
             return True
         
         except Exception as e:

@@ -67,24 +67,36 @@ PYTHON_VERSION=$(python3 --version 2>&1 | cut -d' ' -f2)
 echo -e "Python version: ${GREEN}$PYTHON_VERSION${NC}"
 
 # Check for Discord bot token
-if [[ -z "$DISCORD_BOT_TOKEN" ]]; then
-    echo -e "${YELLOW}Warning: DISCORD_BOT_TOKEN environment variable not set${NC}"
-    echo "Please set your Discord bot token:"
-    echo "export DISCORD_BOT_TOKEN=\"your_token_here\""
-    echo ""
-    echo "Continue anyway? (y/N)"
-    read -r response
-    if [[ ! "$response" =~ ^[Yy]$ ]]; then
+if [[ -f ".env" ]]; then
+    echo "✅ .env file found"
+    # Check if DISCORD_BOT_TOKEN exists in .env file
+    if ! grep -q "^DISCORD_BOT_TOKEN=" .env; then
+        echo -e "${YELLOW}Warning: DISCORD_BOT_TOKEN not found in .env file${NC}"
+        echo "Please add your Discord bot token to .env file:"
+        echo "DISCORD_BOT_TOKEN=your_token_here"
+        echo ""
+        echo "Continue anyway? (y/N)"
+        read -r response
+        if [[ ! "$response" =~ ^[Yy]$ ]]; then
+            exit 1
+        fi
+    fi
+    
+    # Check for Hypixel API key (required for data ingestion)
+    if ! grep -q "^HYPIXEL_API_KEY=" .env; then
+        echo -e "${RED}Error: HYPIXEL_API_KEY not found in .env file${NC}"
+        echo "The data ingestion service requires a Hypixel API key."
+        echo "Please add your Hypixel API key to .env file:"
+        echo "HYPIXEL_API_KEY=your_key_here"
         exit 1
     fi
-fi
-
-# Check for Hypixel API key (required for data ingestion)
-if [[ -z "$HYPIXEL_API_KEY" ]]; then
-    echo -e "${RED}Error: HYPIXEL_API_KEY environment variable not set${NC}"
-    echo "The data ingestion service requires a Hypixel API key."
-    echo "Please set your Hypixel API key:"
-    echo "export HYPIXEL_API_KEY=\"your_key_here\""
+else
+    echo -e "${RED}Error: .env file not found${NC}"
+    echo "Please create a .env file with your secrets. You can use .env.example as a template:"
+    echo "cp .env.example .env"
+    echo "Then edit .env and add your actual tokens:"
+    echo "- DISCORD_BOT_TOKEN=your_discord_bot_token"  
+    echo "- HYPIXEL_API_KEY=your_hypixel_api_key"
     exit 1
 fi
 
@@ -92,7 +104,7 @@ fi
 echo "Checking dependencies..."
 python3 -c "
 import sys
-required_packages = ['discord', 'pandas', 'yaml', 'numpy', 'pyarrow']
+required_packages = ['discord', 'pandas', 'yaml', 'numpy', 'pyarrow', 'dotenv']
 missing = []
 
 for pkg in required_packages:

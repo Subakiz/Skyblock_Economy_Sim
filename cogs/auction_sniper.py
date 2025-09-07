@@ -159,27 +159,28 @@ class AuctionSniper(commands.Cog):
             # Update task intervals from config
             sniper_config = self.config.get("auction_sniper", {})
             hunter_interval = sniper_config.get("hunter_interval_seconds", 2)
-            analyst_interval = sniper_config.get("analyst_interval_seconds", 90)
+            # Intelligence interval is now fixed at 60 seconds as per requirements
+            intelligence_interval = 60
             
             # Change task intervals
             self.high_frequency_snipe_scan.change_interval(seconds=hunter_interval)
-            self.full_market_analysis.change_interval(seconds=analyst_interval)
+            self.update_market_intelligence.change_interval(seconds=intelligence_interval)
             
             # Start tasks
             self.high_frequency_snipe_scan.start()
-            self.full_market_analysis.start()
+            self.update_market_intelligence.start()
             self.hunter_task_active = True
             self.analyst_task_active = True
             
-            self.logger.info(f"Started sniper tasks: Hunter ({hunter_interval}s), Analyst ({analyst_interval}s)")
+            self.logger.info(f"Started sniper tasks: Hunter ({hunter_interval}s), Intelligence ({intelligence_interval}s)")
     
     def cog_unload(self):
         """Clean shutdown of tasks."""
         self.logger.info("Shutting down auction sniper tasks...")
         if self.high_frequency_snipe_scan.is_running():
             self.high_frequency_snipe_scan.cancel()
-        if self.full_market_analysis.is_running():
-            self.full_market_analysis.cancel()
+        if self.update_market_intelligence.is_running():
+            self.update_market_intelligence.cancel()
         self._save_persisted_data()
     
     @tasks.loop(seconds=2)  # Default, will be updated from config
@@ -225,102 +226,79 @@ class AuctionSniper(commands.Cog):
         except Exception as e:
             self.logger.error(f"Hunter task error: {e}")
     
-    @tasks.loop(seconds=90)  # Default, will be updated from config
-    async def full_market_analysis(self):
+    @tasks.loop(seconds=60)  # Updated to 60 seconds as requested
+    async def update_market_intelligence(self):
         """
-        Analyst Task: Full market analysis with pagination.
-        Updates watchlist and FMV data every 90 seconds.
+        Market Intelligence Task: Read-only market analysis from Parquet data.
+        Updates watchlist and FMV data every 60 seconds by reading from pre-processed data.
+        No longer fetches data directly - relies on standalone ingestion service.
         """
-        if not self.hypixel_client:
-            return
-        
         try:
             start_time = time.time()
-            self.logger.info("Starting full market analysis...")
+            self.logger.info("Starting market intelligence update from Parquet data...")
             
-            # Collect all auctions with pagination
-            all_auctions = []
-            page = 0
+            # Check if Parquet data exists
+            if not self.PARQUET_DATA_PATH.exists() or not any(self.PARQUET_DATA_PATH.iterdir()):
+                self.logger.debug("No Parquet auction data found - waiting for ingestion service")
+                return
             
-            while True:
-                try:
-                    response = self.hypixel_client.get_json("skyblock/auctions", {"page": page})
-                    auctions = response.get("auctions", [])
-                    total_pages = response.get("totalPages", 1)
-                    
-                    if not auctions:
-                        break
-                    
-                    all_auctions.extend(auctions)
-                    page += 1
-                    
-                    if page >= total_pages:
-                        break
-                        
-                except Exception as e:
-                    self.logger.error(f"Error fetching page {page}: {e}")
-                    break
-            
-            self.logger.info(f"Collected {len(all_auctions)} total auctions from {page} pages")
-            
-            # Analyze market data - update watchlist first
-            await self._update_watchlist(all_auctions)
-            
-            # Implement Parquet Pipeline
-            scan_timestamp = datetime.now(timezone.utc)
-            
-            # Prune: Extract essential fields
-            auction_records = []
-            for auction in all_auctions:
-                try:
-                    # Extract essential fields only
-                    record = {
-                        'uuid': auction.get('uuid', ''),
-                        'item_name': auction.get('item_name', '').strip(),
-                        'price': float(auction.get('starting_bid', 0)) if auction.get('bin') else float(auction.get('highest_bid_amount', 0)),
-                        'tier': auction.get('tier', ''),
-                        'scan_timestamp': scan_timestamp
-                    }
-                    
-                    # Only include records with valid data
-                    if record['item_name'] and record['price'] > 0:
-                        auction_records.append(record)
-                        
-                except (ValueError, TypeError) as e:
-                    continue  # Skip invalid records
-            
-            if auction_records:
-                # Structure: Convert to pandas DataFrame
-                df = pd.DataFrame(auction_records)
+            # Load recent auction data from Parquet dataset
+            try:
+                dataset = pq.ParquetDataset(self.PARQUET_DATA_PATH)
+                df = dataset.read().to_pandas()
                 
-                # Partition: Create year, month, and day columns
-                df['year'] = df['scan_timestamp'].dt.year
-                df['month'] = df['scan_timestamp'].dt.month  
-                df['day'] = df['scan_timestamp'].dt.day
+                if df.empty:
+                    self.logger.debug("Empty Parquet dataset - waiting for data")
+                    return
                 
-                # Write: Save to partitioned Parquet dataset
-                table = pa.Table.from_pandas(df)
-                pq.write_to_dataset(
-                    table,
-                    root_path=str(self.PARQUET_DATA_PATH),
-                    partition_cols=['year', 'month', 'day'],
-                    existing_data_behavior='overwrite_or_ignore'
-                )
+                self.logger.info(f"Loaded {len(df)} auction records from Parquet dataset")
                 
-                self.logger.info(f"Saved {len(auction_records)} auction records to Parquet dataset")
-            
-            # Update market values from Parquet data
-            self.update_market_values_from_parquet()
-            
-            # Persist watchlist data only (FMV now comes from Parquet analysis)
-            self._save_persisted_data()
-            
-            analysis_time = time.time() - start_time
-            self.logger.info(f"Market analysis complete: {len(self.auction_watchlist)} watchlist items, "
-                           f"FMV data for {len(self.fmv_data)} items in {analysis_time:.1f}s")
+                # Convert to list of dictionaries to maintain compatibility with existing methods
+                auction_records = df.to_dict('records')
+                
+                # Update watchlist based on item volume in Parquet data
+                await self._update_watchlist_from_parquet(auction_records)
+                
+                # Update FMV data from Parquet 
+                self.update_market_values_from_parquet()
+                
+                # Persist updated data
+                self._save_persisted_data()
+                
+                processing_time = time.time() - start_time
+                self.logger.info(f"Market intelligence updated: {len(self.auction_watchlist)} watchlist items, "
+                               f"FMV data for {len(self.fmv_data)} items in {processing_time:.1f}s")
+                
+            except Exception as e:
+                self.logger.error(f"Error reading Parquet data: {e}")
         
         except Exception as e:
-            self.logger.error(f"Analyst task error: {e}")
+            self.logger.error(f"Market intelligence task error: {e}")
+    
+    async def _update_watchlist_from_parquet(self, auction_records: List[Dict[str, Any]]):
+        """Update the auction watchlist based on item volume from Parquet data."""
+        try:
+            # Count occurrences of each item
+            item_counter = Counter()
+            
+            for record in auction_records:
+                item_name = record.get("item_name", "").strip()
+                if item_name:
+                    item_counter[item_name] += 1
+            
+            # Update watchlist with items above threshold
+            old_watchlist_size = len(self.auction_watchlist)
+            self.auction_watchlist = {
+                item_name for item_name, count in item_counter.items()
+                if count >= self.min_auction_count
+            }
+            
+            new_items = len(self.auction_watchlist) - old_watchlist_size
+            self.logger.info(f"Watchlist updated from Parquet: {len(self.auction_watchlist)} items "
+                           f"({'+'+ str(new_items) if new_items > 0 else str(new_items)} from previous)")
+        
+        except Exception as e:
+            self.logger.error(f"Failed to update watchlist from Parquet: {e}")
     
     async def _update_watchlist(self, auctions: List[Dict[str, Any]]):
         """Update the auction watchlist based on item volume."""
@@ -664,10 +642,10 @@ class AuctionSniper(commands.Cog):
         
         # Task status
         hunter_status = "🟢 Running" if self.high_frequency_snipe_scan.is_running() else "🔴 Stopped"
-        analyst_status = "🟢 Running" if self.full_market_analysis.is_running() else "🔴 Stopped"
+        intelligence_status = "🟢 Running" if self.update_market_intelligence.is_running() else "🔴 Stopped"
         
         embed.add_field(name="🏃 Hunter Task (2s)", value=hunter_status, inline=True)
-        embed.add_field(name="🔍 Analyst Task (90s)", value=analyst_status, inline=True)
+        embed.add_field(name="🧠 Intelligence Task (60s)", value=intelligence_status, inline=True)
         embed.add_field(name="📢 Alert Channel", 
                        value=f"<#{self.alert_channel_id}>" if self.alert_channel_id else "Not set", 
                        inline=True)

@@ -187,7 +187,8 @@ class AuctionSniper(commands.Cog):
     async def high_frequency_snipe_scan(self):
         """
         Hunter Task: High-frequency scanning of page 0 for quick snipes.
-        Runs every 2 seconds for maximum speed.
+        Runs every 2 seconds for maximum speed and real-time snipe detection.
+        Maintained from original two-speed architecture as specified in requirements.
         """
         if not self.hypixel_client or not self.auction_watchlist:
             return

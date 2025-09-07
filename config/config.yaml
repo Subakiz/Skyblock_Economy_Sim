@@ -12,6 +12,7 @@ auction_house:
   poll_interval_seconds: 60
   max_pages_per_cycle: 50
   enable_raw_capture: true
+  fee_basis_points: 100  # 1% auction house fee
 
 # Database storage removed - using file-based storage only
 # storage:

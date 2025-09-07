@@ -1,5 +1,6 @@
 import os
 import json
+import yaml
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
@@ -10,6 +11,11 @@ import numpy as np
 
 from modeling.profitability.crafting_profit import compute_profitability, load_item_ontology
 from modeling.profitability.file_data_access import get_file_storage_if_enabled
+
+def load_config() -> Dict[str, Any]:
+    """Load configuration from config.yaml."""
+    with open("config/config.yaml", "r") as f:
+        return yaml.safe_load(f)
 
 # Phase 3 imports
 try:
@@ -205,8 +211,9 @@ def get_craft_profitability(product_id: str, horizon: str = "1h", pricing: str =
         )
     
     try:
-        # Get AH fee from config (hardcoded for now)
-        ah_fee_bps = 100
+        # Get AH fee from config
+        cfg = load_config()
+        ah_fee_bps = cfg.get("auction_house", {}).get("fee_basis_points", 100)  # Default 1%
         
         # Call compute_profitability with conn=None to use file-based mode
         result = compute_profitability(
@@ -407,17 +414,33 @@ def run_predictive_analysis(request: PredictiveAnalysisRequest, background_tasks
                     if item_predictions:
                         ml_predictions[item] = item_predictions
             
-            # Simple market simulation results (placeholder)
+            # Market simulation results based on available data
             simulation_results = {
-                'scenario_comparison': {
-                    scenario: {
-                        'final_sentiment': np.random.uniform(0.4, 0.6),
-                        'transaction_count': np.random.randint(50, 200),
-                        'price_volatility': np.random.uniform(0.1, 0.3)
-                    }
-                    for scenario in request.scenarios
-                }
+                'scenario_comparison': {}
             }
+            
+            # For each scenario, provide basic analysis based on available data
+            for scenario in request.scenarios:
+                scenario_data = {
+                    'data_available': len(ml_predictions) > 0,
+                    'prediction_count': len(ml_predictions),
+                    'analysis': f"Scenario '{scenario}' analysis based on available market data"
+                }
+                
+                if ml_predictions:
+                    # Calculate some basic statistics from predictions
+                    all_predictions = []
+                    for predictions in ml_predictions.values():
+                        all_predictions.extend(predictions.values())
+                    
+                    if all_predictions:
+                        scenario_data.update({
+                            'avg_predicted_price': sum(all_predictions) / len(all_predictions),
+                            'price_range': max(all_predictions) - min(all_predictions),
+                            'items_analyzed': len(ml_predictions)
+                        })
+                
+                simulation_results['scenario_comparison'][scenario] = scenario_data
             
             # Generate trading opportunities
             trading_opportunities = []

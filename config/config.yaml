@@ -78,3 +78,5 @@ auction_sniper:
   analyst_interval_seconds: 90
   # Maximum price multiplier above FMV to consider
   max_fmv_multiplier: 1.1
+  # Thick wall threshold - minimum items at floor price to consider it a "thick wall"
+  thick_wall_threshold: 3

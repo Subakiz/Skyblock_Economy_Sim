@@ -792,62 +792,87 @@ async def market_pulse_command(interaction: discord.Interaction):
 
 @bot.tree.command(name="help", description="Show bot help and command information")
 async def help_command(interaction: discord.Interaction):
-    """Help command to show available commands and usage."""
+    """Dynamic help command that shows all available commands."""
     embed = discord.Embed(
         title="🤖 SkyBlock Economy Bot Help",
         description="Automated SkyBlock market analysis and predictions",
         color=discord.Color.blue()
     )
     
+    # Dynamically get all commands from the bot's command tree
+    commands = bot.tree.get_commands()
+    
+    # Group commands by category
+    analysis_commands = []
+    sniper_commands = []
+    utility_commands = []
+    admin_commands = []
+    
+    for command in commands:
+        if hasattr(command, 'name') and hasattr(command, 'description'):
+            cmd_info = f"**/{command.name}**\n{command.description}"
+            
+            if 'sniper' in command.name.lower():
+                sniper_commands.append(cmd_info)
+            elif command.name.lower() in ['analyze', 'predict', 'compare', 'event_impact', 'market_pulse', 'plot']:
+                analysis_commands.append(cmd_info)
+            elif command.name.lower() in ['retrain', 'admin']:
+                admin_commands.append(cmd_info)
+            else:
+                utility_commands.append(cmd_info)
+    
+    # Add command categories to embed
+    if analysis_commands:
+        embed.add_field(
+            name="📊 **Market Analysis Commands**",
+            value="\n\n".join(analysis_commands),
+            inline=False
+        )
+    
+    if sniper_commands:
+        embed.add_field(
+            name="🎯 **Auction Sniper Commands**",
+            value="\n\n".join(sniper_commands),
+            inline=False
+        )
+    
+    if utility_commands:
+        embed.add_field(
+            name="🔧 **Utility Commands**",
+            value="\n\n".join(utility_commands),
+            inline=False
+        )
+        
+    if admin_commands:
+        embed.add_field(
+            name="👑 **Admin Commands**",
+            value="\n\n".join(admin_commands),
+            inline=False
+        )
+    
+    # Add usage examples
     embed.add_field(
-        name="📊 `/status`",
-        value="Check bot health and data pipeline status",
+        name="💡 **Usage Examples**",
+        value=(
+            "• `/analyze HYPERION` - Analyze HYPERION market trends\n"
+            "• `/predict WHEAT 60min` - Predict WHEAT price in 1 hour\n"
+            "• `/sniper_channel #alerts` - Set sniper alerts channel\n"
+            "• `/plot NECRON_CHESTPLATE` - Generate price chart"
+        ),
         inline=False
     )
     
     embed.add_field(
-        name="📈 `/analyze <item_name>`",
-        value="Comprehensive market analysis with ML predictions\n*Example: `/analyze HYPERION`*",
+        name="ℹ️ **Notes**",
+        value=(
+            "• **Sniper Commands**: Require Administrator permissions\n"
+            "• **Time Horizons**: 15min, 60min, 240min\n"
+            "• **Item Names**: Use UPPERCASE format (e.g., HYPERION)"
+        ),
         inline=False
     )
     
-    embed.add_field(
-        name="🔮 `/predict <item_name> <time_horizon>`",
-        value="Get specific price prediction for an item\n*Example: `/predict WHEAT 60min`*",
-        inline=False
-    )
-    
-    embed.add_field(
-        name="⚖️ `/compare <item_a> <item_b>`",
-        value="Compare two items for arbitrage opportunities\n*Example: `/compare HYPERION NECRON_CHESTPLATE`*",
-        inline=False
-    )
-    
-    embed.add_field(
-        name="📅 `/event_impact <event_name>`",
-        value="Analyze impact of historical SkyBlock events\n*Example: `/event_impact MAYOR_DERPY`*",
-        inline=False
-    )
-    
-    embed.add_field(
-        name="🌡️ `/market_pulse`",
-        value="Get holistic market overview and sentiment analysis",
-        inline=False
-    )
-    
-    embed.add_field(
-        name="ℹ️ **Supported Items**",
-        value="High-value items like HYPERION, NECRON_CHESTPLATE, etc.\nCommodity items like WHEAT, SUGAR_CANE, etc.",
-        inline=False
-    )
-    
-    embed.add_field(
-        name="⏰ **Time Horizons**",
-        value="• 15 minutes\n• 1 hour (60 minutes)\n• 4 hours (240 minutes)",
-        inline=False
-    )
-    
-    embed.set_footer(text="Bot uses ML models trained on historical Hypixel SkyBlock data")
+    embed.set_footer(text=f"Bot has {len(commands)} commands available • ML-powered market analysis")
     
     await interaction.response.send_message(embed=embed)
 
@@ -940,52 +965,54 @@ async def plot_command(interaction: discord.Interaction, item_name: str):
         
         logger.info(f"Generating price chart for {item_name}")
         
-        # Try to load bazaar data for the item
+        # Try to load data for the item from multiple sources
         import pandas as pd
         from pathlib import Path
         
         data_dir = Path("data")
         bazaar_parquet_dir = data_dir / "bazaar_history"
+        auction_parquet_dir = data_dir / "auction_history"
+        
+        dfs = []
         
         # Check for Parquet data first (new architecture)
-        if bazaar_parquet_dir.exists() and any(bazaar_parquet_dir.rglob("*.parquet")):
-            try:
-                import pyarrow.parquet as pq
-                
-                # Read recent Parquet files
-                parquet_files = list(bazaar_parquet_dir.rglob("*.parquet"))
-                parquet_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)  # Most recent first
-                
-                dfs = []
-                for file in parquet_files[:5]:  # Limit to recent files
-                    try:
-                        df = pq.read_table(file).to_pandas()
-                        if 'product_id' in df.columns:
-                            item_data = df[df['product_id'] == item_name]
-                            if not item_data.empty:
-                                dfs.append(item_data)
-                    except Exception as e:
-                        logger.debug(f"Error reading Parquet file {file}: {e}")
-                        continue
-                        
-                if not dfs:
-                    # Try partial matches if exact match fails
-                    for file in parquet_files[:5]:
+        parquet_dirs = [
+            ("bazaar", bazaar_parquet_dir, "product_id"),
+            ("auction", auction_parquet_dir, "item_name")
+        ]
+        
+        try:
+            import pyarrow.parquet as pq
+            
+            for data_type, parquet_dir, item_col in parquet_dirs:
+                if parquet_dir.exists() and any(parquet_dir.rglob("*.parquet")):
+                    # Read recent Parquet files
+                    parquet_files = list(parquet_dir.rglob("*.parquet"))
+                    parquet_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)  # Most recent first
+                    
+                    for file in parquet_files[:5]:  # Limit to recent files
                         try:
                             df = pq.read_table(file).to_pandas()
-                            if 'product_id' in df.columns:
-                                # Case-insensitive partial match
-                                item_data = df[df['product_id'].str.contains(item_name, case=False, na=False)]
+                            if item_col in df.columns:
+                                # Exact match first
+                                item_data = df[df[item_col] == item_name]
                                 if not item_data.empty:
+                                    logger.debug(f"Found {data_type} data for {item_name} in {file}")
                                     dfs.append(item_data)
-                                    break  # Found data, stop searching
+                                    continue
+                                
+                                # Try partial match if exact match fails
+                                item_data = df[df[item_col].str.contains(item_name, case=False, na=False)]
+                                if not item_data.empty:
+                                    logger.debug(f"Found {data_type} data for {item_name} (partial match) in {file}")
+                                    dfs.append(item_data)
                         except Exception as e:
                             logger.debug(f"Error reading Parquet file {file}: {e}")
                             continue
                             
-            except ImportError:
-                await interaction.followup.send("❌ PyArrow is required for reading Parquet data but is not available.")
-                return
+        except ImportError:
+            await interaction.followup.send("❌ PyArrow is required for reading Parquet data but is not available.")
+            return
         
         # Fallback to old NDJSON files if Parquet data not available
         if not dfs:
@@ -1047,17 +1074,43 @@ async def plot_command(interaction: discord.Interaction, item_name: str):
             # Process real data
             df = pd.concat(dfs)
             
-            # Flexible timestamp column detection
-            timestamp_columns = ['timestamp', 'collected_at', 'ts', 'scan_timestamp', 'start_timestamp', 'end_timestamp']
+            # Flexible timestamp column detection - enhanced for auction data
+            timestamp_columns = [
+                'timestamp', 'collected_at', 'ts', 
+                'scan_timestamp', 'start_timestamp', 'end_timestamp',
+                'created_at', 'updated_at', 'last_updated',
+                'collection_time', 'ingestion_timestamp'
+            ]
             timestamp_col = None
+            
+            # Debug: log available columns
+            logger.debug(f"Available columns in data: {list(df.columns)}")
             
             for col_name in timestamp_columns:
                 if col_name in df.columns:
                     timestamp_col = col_name
+                    logger.debug(f"Using timestamp column: {timestamp_col}")
                     break
             
+            # If standard timestamp columns not found, look for any column with 'time' in the name
             if timestamp_col is None:
-                await interaction.followup.send("❌ No timestamp column found in the data. Cannot create time-series plot.")
+                time_like_cols = [col for col in df.columns if 'time' in col.lower()]
+                if time_like_cols:
+                    timestamp_col = time_like_cols[0]
+                    logger.debug(f"Using time-like column: {timestamp_col}")
+            
+            # If still no timestamp, look for date-like columns
+            if timestamp_col is None:
+                date_like_cols = [col for col in df.columns if any(col.lower().endswith('_' + word) or col.lower().startswith(word + '_') or word in col.lower().split('_') for word in ['date', 'when']) or col.lower().endswith('_at')]
+                if date_like_cols:
+                    timestamp_col = date_like_cols[0]
+                    logger.debug(f"Using date-like column: {timestamp_col}")
+            
+            if timestamp_col is None:
+                await interaction.followup.send(
+                    f"❌ No timestamp column found in the data. Available columns: {', '.join(df.columns)}\n"
+                    f"Cannot create time-series plot without timestamp information."
+                )
                 return
             
             # Sort by timestamp and convert to datetime
@@ -1067,11 +1120,36 @@ async def plot_command(interaction: discord.Interaction, item_name: str):
             # Create the plot
             plt.figure(figsize=(12, 6))
             
+            # Flexible price column detection
+            price_columns = []
+            
+            # Bazaar data columns
             if 'buy_price' in df.columns and not df['buy_price'].isna().all():
-                plt.plot(df[timestamp_col], df['buy_price'], label='Buy Price', linewidth=2, alpha=0.8)
+                price_columns.append(('buy_price', 'Buy Price', '#2E8B57'))
             
             if 'sell_price' in df.columns and not df['sell_price'].isna().all():
-                plt.plot(df[timestamp_col], df['sell_price'], label='Sell Price', linewidth=2, alpha=0.8)
+                price_columns.append(('sell_price', 'Sell Price', '#DC143C'))
+                
+            # Auction data columns  
+            if 'price' in df.columns and not df['price'].isna().all():
+                price_columns.append(('price', 'Auction Price', '#1f77b4'))
+                
+            if 'starting_bid' in df.columns and not df['starting_bid'].isna().all():
+                price_columns.append(('starting_bid', 'Starting Bid', '#ff7f0e'))
+                
+            if 'highest_bid_amount' in df.columns and not df['highest_bid_amount'].isna().all():
+                price_columns.append(('highest_bid_amount', 'Highest Bid', '#2ca02c'))
+            
+            # Plot found price columns
+            if price_columns:
+                for col_name, label, color in price_columns:
+                    plt.plot(df[timestamp_col], df[col_name], label=label, 
+                           linewidth=2, alpha=0.8, color=color)
+            else:
+                await interaction.followup.send(
+                    f"❌ No price columns found in the data. Available columns: {', '.join(df.columns)}"
+                )
+                return
             
             plt.title(f'{item_name} - Price History', fontsize=16, fontweight='bold')
             plt.xlabel('Time', fontsize=12)

@@ -346,7 +346,7 @@ class AuctionSniper(commands.Cog):
     async def _update_fmv_data(self, auctions: List[Dict[str, Any]]):
         """
         Update Fair Market Value data for watchlist items.
-        Uses second-lowest BIN price methodology for accurate FMV calculation.
+        Uses market depth-aware FMV calculation to avoid "price wall" problem.
         """
         try:
             # Group auctions by item (BIN only)
@@ -362,7 +362,7 @@ class AuctionSniper(commands.Cog):
                     except (ValueError, TypeError):
                         continue
             
-            # Calculate FMV statistics using second-lowest BIN price
+            # Calculate market depth-aware FMV
             for item_name, prices in item_prices.items():
                 if len(prices) >= 2:
                     prices.sort()
@@ -372,16 +372,17 @@ class AuctionSniper(commands.Cog):
                     filtered_prices = [p for p in prices if p <= median_price * 10]
                     
                     if len(filtered_prices) >= 2:
-                        # Use second-lowest BIN price as FMV
-                        fmv = filtered_prices[1]  # Second lowest
-                        median = filtered_prices[len(filtered_prices) // 2]
+                        # Market depth analysis: group by price levels
+                        price_levels = self._analyze_market_depth(filtered_prices)
+                        fmv, method = self._calculate_depth_aware_fmv(price_levels)
                         
                         self.fmv_data[item_name] = {
                             "fmv": fmv,
-                            "median": median,
+                            "median": filtered_prices[len(filtered_prices) // 2],
                             "samples": len(prices),
                             "updated_at": datetime.now(timezone.utc).isoformat(),
-                            "method": "second_lowest_bin"
+                            "method": method,
+                            "price_levels": len(price_levels)
                         }
                     elif len(filtered_prices) == 1:
                         # Only one price available, use it but with discount
@@ -391,18 +392,64 @@ class AuctionSniper(commands.Cog):
                             "median": filtered_prices[0],
                             "samples": 1,
                             "updated_at": datetime.now(timezone.utc).isoformat(),
-                            "method": "single_bin_discounted"
+                            "method": "single_bin_discounted",
+                            "price_levels": 1
                         }
             
-            self.logger.debug(f"Updated FMV data using second-lowest BIN price for {len(item_prices)} items")
+            self.logger.debug(f"Updated FMV data using market depth-aware calculation for {len(item_prices)} items")
         
         except Exception as e:
             self.logger.error(f"Failed to update FMV data: {e}")
     
+    def _analyze_market_depth(self, sorted_prices: List[float]) -> List[Tuple[float, int]]:
+        """
+        Analyze market depth by grouping prices into levels and counting quantity at each level.
+        Returns list of (price, count) tuples sorted by price.
+        """
+        from collections import Counter
+        
+        # Group prices with small tolerance for floating-point precision
+        # Round to nearest 100 coins to group similar prices
+        rounded_prices = [round(p / 100) * 100 for p in sorted_prices]
+        price_counts = Counter(rounded_prices)
+        
+        # Sort by price (ascending)
+        price_levels = sorted(price_counts.items())
+        return price_levels
+    
+    def _calculate_depth_aware_fmv(self, price_levels: List[Tuple[float, int]]) -> Tuple[float, str]:
+        """
+        Calculate FMV based on market depth analysis.
+        
+        Logic:
+        - If the lowest price level has >2 items (thick wall), FMV = lowest price (no profit opportunity)
+        - If the lowest price level has ≤2 items (thin wall), FMV = next price level
+        """
+        if not price_levels:
+            return 0.0, "no_data"
+        
+        if len(price_levels) == 1:
+            # Only one price level, use it with discount
+            return price_levels[0][0] * 0.95, "single_level_discounted"
+        
+        lowest_price, lowest_count = price_levels[0]
+        
+        # Configurable threshold for "thick wall" (default 3 items)
+        sniper_config = self.config.get("auction_sniper", {})
+        thick_wall_threshold = sniper_config.get("thick_wall_threshold", 3)
+        
+        if lowest_count >= thick_wall_threshold:
+            # Thick wall: Use lowest price as FMV (represents reality that you can't profit)
+            return lowest_price, f"thick_wall_floor_{lowest_count}_items"
+        else:
+            # Thin wall: Use next price level as FMV (true opportunity)
+            next_price, next_count = price_levels[1]
+            return next_price, f"thin_wall_next_level_{lowest_count}_at_floor"
+    
     def update_market_values_from_parquet(self):
         """
         Update market values cache from Parquet dataset.
-        Uses second-lowest BIN price methodology for accurate FMV calculation.
+        Uses market depth-aware FMV calculation to avoid "price wall" problem.
         """
         try:
             # Check if Parquet data exists
@@ -427,14 +474,14 @@ class AuctionSniper(commands.Cog):
                 self.logger.debug("No BIN auctions found in Parquet data")
                 return
             
-            # Calculate second-lowest BIN price for watchlist items
+            # Calculate market depth-aware FMV for watchlist items
             watchlist_items = bin_auctions[bin_auctions['item_name'].isin(self.auction_watchlist)]
             
             if watchlist_items.empty:
                 self.logger.debug("No watchlist items found in Parquet data")
                 return
             
-            # Group by item_name and calculate FMV using second-lowest BIN price
+            # Group by item_name and calculate FMV using market depth analysis
             fmv_data = {}
             for item_name in watchlist_items['item_name'].unique():
                 item_data = watchlist_items[watchlist_items['item_name'] == item_name]
@@ -447,37 +494,39 @@ class AuctionSniper(commands.Cog):
                     if len(filtered_data) >= 2:
                         item_data = filtered_data
                 
-                # Sort prices and get second-lowest
+                # Sort prices for market depth analysis
                 sorted_prices = item_data['price'].sort_values().tolist()
                 
                 if len(sorted_prices) >= 2:
-                    # Use second-lowest BIN price as FMV (represents real resale market)
-                    fmv = sorted_prices[1]  # Second lowest
-                    median = item_data['price'].median()
+                    # Market depth analysis: group by price levels
+                    price_levels = self._analyze_market_depth(sorted_prices)
+                    fmv, method = self._calculate_depth_aware_fmv(price_levels)
                     
                     fmv_data[item_name] = {
                         "fmv": float(fmv),
-                        "median": float(median),
+                        "median": float(item_data['price'].median()),
                         "samples": len(sorted_prices),
                         "updated_at": datetime.now(timezone.utc).isoformat(),
-                        "method": "second_lowest_bin"
+                        "method": method,
+                        "price_levels": len(price_levels)
                     }
                 elif len(sorted_prices) == 1:
                     # Only one price available, use it but with low confidence
-                    fmv = sorted_prices[0]
+                    fmv = sorted_prices[0] * 0.95  # Apply 5% discount for single sample
                     fmv_data[item_name] = {
-                        "fmv": float(fmv) * 0.95,  # Apply 5% discount for single sample
-                        "median": float(fmv),
+                        "fmv": float(fmv),
+                        "median": float(sorted_prices[0]),
                         "samples": 1,
                         "updated_at": datetime.now(timezone.utc).isoformat(),
-                        "method": "single_bin_discounted"
+                        "method": "single_bin_discounted",
+                        "price_levels": 1
                     }
             
             # Update the cache
             for item_name, data in fmv_data.items():
                 self.fmv_data[item_name] = data
             
-            self.logger.debug(f"Updated FMV data using second-lowest BIN price for {len(fmv_data)} items")
+            self.logger.debug(f"Updated FMV data using market depth-aware calculation for {len(fmv_data)} items")
             
         except Exception as e:
             self.logger.error(f"Failed to update market values from Parquet: {e}")
@@ -688,16 +737,19 @@ class AuctionSniper(commands.Cog):
     @app_commands.describe(channel="Channel to send snipe alerts to")
     async def set_sniper_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
         """Set the alert channel for auction snipes."""
+        # Immediately defer the response to avoid timeout
+        await interaction.response.defer()
+        
         if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ You need Administrator permissions to configure the sniper.", ephemeral=True)
+            await interaction.followup.send("❌ You need Administrator permissions to configure the sniper.", ephemeral=True)
             return
         
         self.alert_channel_id = channel.id
         
-        # Save to config
+        # Save to config (async file I/O)
         await self._save_sniper_config()
         
-        await interaction.response.send_message(f"✅ Sniper alerts will be sent to {channel.mention}")
+        await interaction.followup.send(f"✅ Sniper alerts will be sent to {channel.mention}")
         self.logger.info(f"Sniper alert channel set to #{channel.name} ({channel.id})")
     
     @app_commands.command(name="sniper_config", description="Configure sniper settings")

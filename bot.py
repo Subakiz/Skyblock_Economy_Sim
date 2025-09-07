@@ -24,6 +24,10 @@ from io import BytesIO
 import numpy as np
 import json
 
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv()
+
 # Add project root to path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))

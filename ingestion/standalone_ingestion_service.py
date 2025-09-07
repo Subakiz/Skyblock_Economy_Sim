@@ -27,6 +27,7 @@ import pyarrow.parquet as pq
 import yaml
 
 from ingestion.common.hypixel_client import HypixelClient
+from ingestion.item_processing import create_canonical_name
 
 # Configure logging
 logging.basicConfig(
@@ -229,9 +230,13 @@ class StandaloneIngestionService:
                     try:
                         # Extract essential fields
                         item_name = auction.get('item_name', '').strip()
+                        item_lore = auction.get('item_lore', '')
                         
-                        # Use intelligent base_item_id cleaner
-                        base_item_id = self._get_base_item_id(item_name, self.canonical_items)
+                        # Create canonical name with attributes
+                        canonical_name = create_canonical_name(item_name, item_lore)
+                        
+                        # Use intelligent base_item_id cleaner on canonical name
+                        base_item_id = self._get_base_item_id(canonical_name, self.canonical_items)
                         
                         # Extract price (BIN vs regular auction)
                         if auction.get('bin'):
@@ -241,7 +246,8 @@ class StandaloneIngestionService:
                         
                         record = {
                             'uuid': auction.get('uuid', ''),
-                            'item_name': item_name,
+                            'item_name': canonical_name,  # Use canonical name
+                            'original_name': item_name,   # Keep original for reference
                             'base_item_id': base_item_id,
                             'price': price,
                             'tier': auction.get('tier', ''),

@@ -25,6 +25,7 @@ import aiofiles
 
 # Import project modules
 from ingestion.common.hypixel_client import HypixelClient
+from ingestion.item_processing import create_canonical_name
 
 
 class AuctionSniper(commands.Cog):
@@ -217,8 +218,16 @@ class AuctionSniper(commands.Cog):
                         continue
                     
                     item_name = auction.get("item_name", "").strip()
-                    if not item_name or item_name not in self.auction_watchlist:
+                    item_lore = auction.get("item_lore", "")
+                    
+                    # Generate canonical name for consistency with ingested data
+                    canonical_name = create_canonical_name(item_name, item_lore)
+                    
+                    if not canonical_name or canonical_name not in self.auction_watchlist:
                         continue
+                    
+                    # Update auction with canonical name for verification
+                    auction["item_name"] = canonical_name
                     
                     # Passed initial filters, do intensive verification
                     if await self._verify_snipe(auction):

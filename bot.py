@@ -61,17 +61,13 @@ class SkyBlockEconomyBot(discord.Client):
         self.auction_collector_task = None
         self.bazaar_collector_task = None
         
-        # Track data collection stats
-        self.auction_records = 0
-        self.bazaar_records = 0
-        self.last_auction_update = None
-        self.last_bazaar_update = None
         self.last_feature_build = None
         
     async def setup_hook(self):
         """Set up the bot after login."""
         # Start background tasks
         if IMPORTS_SUCCESS:
+            await self.start_data_collectors()
             self.feature_builder.start()
             logger.info("Started feature building background task")
         else:
@@ -86,7 +82,24 @@ class SkyBlockEconomyBot(discord.Client):
         logger.info(f'{self.user} has logged in and is ready!')
         logger.info(f'Bot is in {len(self.guilds)} guilds')
 
-    @tasks.loop(hours=1)  # Run feature building every hour
+    # --- NEW METHOD TO START DATA COLLECTORS ---
+    async def start_data_collectors(self):
+        """Starts the auction and bazaar data collectors in background threads."""
+        if not os.getenv("HYPIXEL_API_KEY"):
+            logger.warning("HYPIXEL_API_KEY not set. Skipping data collection.")
+            return
+
+        loop = asyncio.get_event_loop()
+        
+        logger.info("Starting auction collector in background...")
+        self.auction_collector_task = asyncio.to_thread(auction_collector_run)
+        
+        logger.info("Starting bazaar collector in background...")
+        self.bazaar_collector_task = asyncio.to_thread(bazaar_collector_run)
+        
+        logger.info("Data collection tasks have been launched.")
+
+    @tasks.loop(hours=1)
     async def feature_builder(self):
         """Background task to build features periodically."""
         try:
@@ -102,14 +115,6 @@ class SkyBlockEconomyBot(discord.Client):
         except Exception as e:
             logger.error(f"Feature building failed: {e}")
 
-    def start_data_collection_background(self):
-        """Start data collection in background threads (non-blocking)."""
-        # Note: These would normally run in separate processes or containers
-        # For demo purposes, we'll track them conceptually
-        logger.info("Data collection tasks would start here in production")
-        # In a real deployment, auction_collector and bazaar_collector 
-        # would run as separate services or containers
-        
 # Create bot instance
 bot = SkyBlockEconomyBot()
 
@@ -126,20 +131,28 @@ async def status_command(interaction: discord.Interaction):
         minutes, _ = divmod(remainder, 60)
         uptime_str = f"{days} days, {hours} hours, {minutes} minutes"
         
-        # Check data directory for file counts (approximate)
+        # Check data directory for file counts
         data_dir = Path("data")
-        auction_files = 0
-        bazaar_files = 0
+        auction_records = 0
+        bazaar_records = 0
         
         if data_dir.exists():
-            auction_files = len(list(data_dir.glob("auctions*.ndjson")))
-            bazaar_files = len(list(data_dir.glob("bazaar*.ndjson")))
-        
+            auction_file = data_dir / "auctions.ndjson"
+            bazaar_file = data_dir / "bazaar_snapshots.ndjson"
+            
+            if auction_file.exists():
+                with open(auction_file, 'r') as f:
+                    auction_records = sum(1 for _ in f)
+            
+            if bazaar_file.exists():
+                with open(bazaar_file, 'r') as f:
+                    bazaar_records = sum(1 for _ in f)
+
         # Check model directory
         model_dir = Path("models")
         models_count = 0
         if model_dir.exists():
-            models_count = len(list(model_dir.glob("*.pkl")))
+            models_count = len(list(model_dir.glob("*.pkl"))) + len(list(model_dir.glob("*.txt")))
         
         # Create status embed
         embed = discord.Embed(
@@ -155,8 +168,8 @@ async def status_command(interaction: discord.Interaction):
         )
         
         embed.add_field(
-            name="📊 Data Files",
-            value=f"Auction: {auction_files}\nBazaar: {bazaar_files}",
+            name="📊 Data Records",
+            value=f"Auction: {auction_records:,}\nBazaar: {bazaar_records:,}",
             inline=True
         )
         
@@ -198,6 +211,7 @@ async def status_command(interaction: discord.Interaction):
         logger.error(f"Status command failed: {e}")
         await interaction.followup.send(f"❌ Failed to get status: {str(e)}")
 
+# (The rest of your commands: /analyze, /predict, /help, etc. remain unchanged)
 @bot.tree.command(name="analyze", description="Analyze item market data and predictions")
 @app_commands.describe(item_name="Name of the item to analyze (e.g., HYPERION)")
 async def analyze_command(interaction: discord.Interaction, item_name: str):
@@ -657,24 +671,22 @@ async def plot_command(interaction: discord.Interaction, item_name: str):
         logger.error(f"Plot command failed: {e}")
         await interaction.followup.send(f"❌ Failed to generate chart: {str(e)}")
 
+
 def main():
     """Main entry point for the Discord bot."""
-    # Check for bot token
     bot_token = os.getenv("DISCORD_BOT_TOKEN")
     if not bot_token:
         logger.error("DISCORD_BOT_TOKEN environment variable not set")
         sys.exit(1)
     
-    # Check for Hypixel API key
     hypixel_key = os.getenv("HYPIXEL_API_KEY")
     if not hypixel_key:
-        logger.warning("HYPIXEL_API_KEY not set - data collection will not work")
+        logger.warning("HYPIXEL_API_KEY not set - data collection will be limited, but bot will start.")
     
     logger.info("Starting SkyBlock Economy Discord Bot...")
     logger.info(f"Phase 3 available: {PHASE3_AVAILABLE}")
     logger.info(f"Imports successful: {IMPORTS_SUCCESS}")
     
-    # Start the bot
     try:
         bot.run(bot_token)
     except KeyboardInterrupt:
@@ -684,3 +696,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

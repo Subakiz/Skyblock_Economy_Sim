@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import psycopg2
 import psycopg2.extras
 from datetime import datetime, timezone
@@ -8,6 +9,7 @@ from typing import Dict, Any
 import yaml
 
 from ingestion.common.hypixel_client import HypixelClient
+# The storage instance is no longer needed for file mode, but we keep the import for DB mode logic
 from storage.ndjson_storage import get_storage_instance
 
 def load_config() -> Dict[str, Any]:
@@ -81,7 +83,12 @@ def run():
                             count += 1
                 print(f"[{ts.isoformat()}] Upserted {count} bazaar snapshots to database")
             else:
-                # File-based storage
+                # --- MODIFIED SECTION FOR FILE MODE ---
+                data_dir = cfg.get("no_database_mode", {}).get("data_directory", "data")
+                os.makedirs(data_dir, exist_ok=True)
+                output_path = os.path.join(data_dir, "bazaar_snapshots.ndjson")
+                
+                records_to_write = []
                 for pid, pdata in products.items():
                     qs = pdata.get("quick_status", {})
                     record = {
@@ -94,9 +101,15 @@ def run():
                         "buy_orders": qs.get("buyOrders"),
                         "sell_orders": qs.get("sellOrders")
                     }
-                    storage.append_record("bazaar", record)
+                    records_to_write.append(record)
                     count += 1
-                print(f"[{ts.isoformat()}] Wrote {count} bazaar snapshots to NDJSON files")
+
+                # Append all records for this cycle in one go
+                with open(output_path, "a") as f:
+                    for record in records_to_write:
+                        f.write(json.dumps(record) + "\n")
+                
+                print(f"[{ts.isoformat()}] Wrote {count} bazaar snapshots to {output_path}")
             
             time.sleep(poll_interval)
     finally:

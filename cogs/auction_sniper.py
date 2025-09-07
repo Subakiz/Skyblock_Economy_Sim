@@ -10,7 +10,7 @@ import logging
 import time
 import os
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, Set, List, Optional, Any, Tuple
 import re
@@ -63,9 +63,11 @@ class AuctionSniper(commands.Cog):
         # Sniper state
         self.auction_watchlist: Set[str] = set()  # Items worth sniping
         self.fmv_data: Dict[str, Dict[str, float]] = {}  # Fair Market Value cache
+        self.recent_alerts: Dict[str, datetime] = {}  # Cooldown tracking for alerts
         self.alert_channel_id: Optional[int] = None
         self.profit_threshold: float = sniper_config.get("profit_threshold", 100000)
         self.min_auction_count: int = sniper_config.get("min_auction_count", 50)
+        self.alert_cooldown_minutes: int = sniper_config.get("alert_cooldown_minutes", 10)  # Default 10 minute cooldown
         
         # Data directories
         self.data_dir = Path("data/sniper")
@@ -247,29 +249,41 @@ class AuctionSniper(commands.Cog):
     @tasks.loop(seconds=60)  # Updated to 60 seconds as requested
     async def update_market_intelligence(self):
         """
-        Market Intelligence Task: Read-only market analysis from Parquet data.
-        Updates watchlist and FMV data every 60 seconds by reading from pre-processed data.
-        No longer fetches data directly - relies on standalone ingestion service.
+        Market Intelligence Task: Memory-efficient market analysis from Parquet data.
+        Uses time-windowed loading (2-hour window) to prevent OOM kills.
+        Updates watchlist and FMV data every 60 seconds by reading only recent data.
         """
         try:
             start_time = time.time()
-            self.logger.info("Starting market intelligence update from Parquet data...")
+            self.logger.info("Starting memory-efficient market intelligence update from Parquet data...")
             
             # Check if Parquet data exists
             if not self.PARQUET_DATA_PATH.exists() or not any(self.PARQUET_DATA_PATH.iterdir()):
                 self.logger.debug("No Parquet auction data found - waiting for ingestion service")
                 return
             
-            # Load recent auction data from Parquet dataset
+            # Memory-efficient loading: Only load last 2 hours of data
             try:
-                dataset = pq.ParquetDataset(self.PARQUET_DATA_PATH)
-                df = dataset.read().to_pandas()
+                # Calculate 2-hour time window
+                two_hours_ago = datetime.now(timezone.utc) - timedelta(hours=2)
+                
+                # Use modern dataset API for efficient filtering
+                import pyarrow.dataset as ds
+                dataset = ds.dataset(self.PARQUET_DATA_PATH, format="parquet")
+                
+                # Create filter for recent data only
+                filter_expr = ds.field('scan_timestamp') > two_hours_ago
+                
+                # Read filtered data - only loads necessary blocks from disk  
+                table = dataset.to_table(filter=filter_expr)
+                df = table.to_pandas()
                 
                 if df.empty:
-                    self.logger.debug("Empty Parquet dataset - waiting for data")
+                    self.logger.debug("No recent data in 2-hour window - waiting for new data")
                     return
                 
-                self.logger.info(f"Loaded {len(df)} auction records from Parquet dataset")
+                self.logger.info(f"Memory-efficiently loaded {len(df)} recent auction records "
+                               f"(2-hour window from {two_hours_ago.strftime('%H:%M:%S')})")
                 
                 # Convert to list of dictionaries to maintain compatibility with existing methods
                 auction_records = df.to_dict('records')
@@ -277,8 +291,8 @@ class AuctionSniper(commands.Cog):
                 # Update watchlist based on item volume in Parquet data
                 await self._update_watchlist_from_parquet(auction_records)
                 
-                # Update FMV data from Parquet 
-                self.update_market_values_from_parquet()
+                # Update FMV data from Parquet using time-windowed data
+                self.update_market_values_from_parquet_windowed(df)
                 
                 # Persist updated data
                 await self._save_persisted_data()
@@ -446,7 +460,114 @@ class AuctionSniper(commands.Cog):
             next_price, next_count = price_levels[1]
             return next_price, f"thin_wall_next_level_{lowest_count}_at_floor"
     
+    def update_market_values_from_parquet_windowed(self, df: pd.DataFrame):
+        """
+        Memory-efficient update of market values cache from windowed Parquet data.
+        Uses market depth-aware FMV calculation to avoid "price wall" problem.
+        Works with pre-filtered DataFrame to avoid memory issues.
+        """
+        try:
+            if df.empty:
+                self.logger.debug("Empty windowed dataset for FMV calculation")
+                return
+            
+            # Filter for BIN auctions only (for accurate market pricing)
+            bin_auctions = df[df['bin'] == True].copy()
+            
+            if bin_auctions.empty:
+                self.logger.debug("No BIN auctions found in windowed data")
+                return
+            
+            # Calculate market depth-aware FMV for watchlist items
+            watchlist_items = bin_auctions[bin_auctions['item_name'].isin(self.auction_watchlist)]
+            
+            if watchlist_items.empty:
+                self.logger.debug("No watchlist items found in windowed data")
+                return
+            
+            # Group by item_name and calculate FMV using market depth analysis
+            fmv_data = {}
+            for item_name in watchlist_items['item_name'].unique():
+                item_data = watchlist_items[watchlist_items['item_name'] == item_name]
+                
+                # Filter out extreme outliers (prices > 10x median for sanity)
+                median_price = item_data['price'].median()
+                if median_price > 0:
+                    # Remove prices that are clearly outliers (more than 10x median)
+                    filtered_data = item_data[item_data['price'] <= median_price * 10]
+                    if len(filtered_data) >= 2:
+                        item_data = filtered_data
+                
+                # Sort prices for market depth analysis
+                sorted_prices = item_data['price'].sort_values().tolist()
+                
+                if len(sorted_prices) >= 2:
+                    # Market depth analysis: group by price levels
+                    price_levels = self._analyze_market_depth(sorted_prices)
+                    fmv, method = self._calculate_depth_aware_fmv(price_levels)
+                    
+                    fmv_data[item_name] = {
+                        "fmv": float(fmv),
+                        "median": float(item_data['price'].median()),
+                        "samples": len(sorted_prices),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                        "method": method,
+                        "price_levels": len(price_levels)
+                    }
+                elif len(sorted_prices) == 1:
+                    # Only one price available, use it but with low confidence
+                    fmv = sorted_prices[0] * 0.95  # Apply 5% discount for single sample
+                    fmv_data[item_name] = {
+                        "fmv": float(fmv),
+                        "median": float(sorted_prices[0]),
+                        "samples": 1,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                        "method": "single_bin_discounted",
+                        "price_levels": 1
+                    }
+            
+            # Update the cache with windowed data
+            for item_name, data in fmv_data.items():
+                self.fmv_data[item_name] = data
+            
+            self.logger.debug(f"Updated FMV data using windowed analysis for {len(fmv_data)} items")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to update market values from windowed data: {e}")
+
     def update_market_values_from_parquet(self):
+        """
+        Legacy method: Update market values cache from Parquet dataset.
+        This method is kept for backward compatibility but should use windowed loading.
+        Uses market depth-aware FMV calculation to avoid "price wall" problem.
+        """
+        try:
+            # Check if Parquet data exists
+            if not self.PARQUET_DATA_PATH.exists() or not any(self.PARQUET_DATA_PATH.iterdir()):
+                self.logger.debug("No Parquet data found for market analysis")
+                return
+            
+            # Use memory-efficient windowed loading instead of full dataset
+            two_hours_ago = datetime.now(timezone.utc) - timedelta(hours=2)
+            import pyarrow.dataset as ds
+            dataset = ds.dataset(self.PARQUET_DATA_PATH, format="parquet")
+            
+            # Create filter for recent data only
+            filter_expr = ds.field('scan_timestamp') > two_hours_ago
+            table = dataset.to_table(filter=filter_expr)
+            df = table.to_pandas()
+            
+            if df.empty:
+                self.logger.debug("Empty windowed Parquet dataset")
+                return
+            
+            # Use the windowed method for actual processing
+            self.update_market_values_from_parquet_windowed(df)
+            
+            self.logger.debug("Market values updated using legacy method with windowed optimization")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to update market values from Parquet: {e}")
         """
         Update market values cache from Parquet dataset.
         Uses market depth-aware FMV calculation to avoid "price wall" problem.
@@ -692,16 +813,39 @@ class AuctionSniper(commands.Cog):
             return True  # Default to accepting if check fails
     
     async def _alert_snipe(self, auction: Dict[str, Any]):
-        """Send snipe alert to configured Discord channel."""
+        """Send snipe alert to configured Discord channel with seller-aware cooldown."""
         if not self.alert_channel_id:
             return
         
         try:
+            item_name = auction.get("item_name", "Unknown Item")
+            auctioneer = auction.get("auctioneer", "")
+            
+            # Create seller-aware composite key for cooldown tracking
+            alert_key = f"{item_name}_{auctioneer}"
+            
+            # Check cooldown - prevent duplicate alerts from same seller for same item
+            current_time = datetime.now(timezone.utc)
+            if alert_key in self.recent_alerts:
+                last_alert_time = self.recent_alerts[alert_key]
+                time_since_last = (current_time - last_alert_time).total_seconds() / 60  # minutes
+                
+                if time_since_last < self.alert_cooldown_minutes:
+                    self.logger.debug(f"Suppressing duplicate alert: {item_name} from seller {auctioneer[:8]}... "
+                                    f"(cooldown: {time_since_last:.1f}/{self.alert_cooldown_minutes} min)")
+                    return
+            
+            # Clean up expired cooldowns (older than 2x cooldown period)
+            cutoff_time = current_time - timedelta(minutes=self.alert_cooldown_minutes * 2)
+            expired_keys = [key for key, timestamp in self.recent_alerts.items() if timestamp < cutoff_time]
+            for key in expired_keys:
+                del self.recent_alerts[key]
+            
+            # Send the alert
             channel = self.bot.get_channel(self.alert_channel_id)
             if not channel:
                 return
             
-            item_name = auction.get("item_name", "Unknown Item")
             price = float(auction.get("starting_bid", 0))
             uuid = auction.get("uuid", "")
             fmv_info = self.fmv_data.get(item_name, {})
@@ -712,7 +856,7 @@ class AuctionSniper(commands.Cog):
                 title="🎯 Auction Snipe Detected!",
                 description=f"**{item_name}**",
                 color=0x00ff00,
-                timestamp=datetime.now(timezone.utc)
+                timestamp=current_time
             )
             
             embed.add_field(name="💰 Price", value=f"{price:,.0f} coins", inline=True)
@@ -726,7 +870,10 @@ class AuctionSniper(commands.Cog):
             
             await channel.send(embed=embed)
             
-            self.logger.info(f"Sent snipe alert for {item_name} to channel {channel.name}")
+            # Record the alert in cooldown cache
+            self.recent_alerts[alert_key] = current_time
+            
+            self.logger.info(f"Sent snipe alert for {item_name} from seller {auctioneer[:8]}... to channel {channel.name}")
         
         except Exception as e:
             self.logger.error(f"Failed to send snipe alert: {e}")

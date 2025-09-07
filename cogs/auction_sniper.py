@@ -76,6 +76,12 @@ class AuctionSniper(commands.Cog):
         self._load_persisted_data()
         self._load_saved_config()
         
+        # Hardcoded fallback for alert channel if not configured
+        # This ensures notifications work immediately without requiring manual configuration
+        if not self.alert_channel_id:
+            self.alert_channel_id = 1414187136609030154  # Default alert channel
+            self.logger.info(f"Using hardcoded fallback alert channel: {self.alert_channel_id}")
+        
         # Task management
         self.hunter_task_active = False
         self.analyst_task_active = False

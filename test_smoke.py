@@ -31,12 +31,17 @@ def test_config():
         with open("config/config.yaml", "r") as f:
             config = yaml.safe_load(f)
         
-        # Check required sections
-        required_sections = ['hypixel', 'storage', 'features', 'forecast']
+        # Check required sections for no-database mode
+        required_sections = ['hypixel', 'no_database_mode', 'features', 'forecast']
         for section in required_sections:
             if section not in config:
                 print(f"✗ Missing config section: {section}")
                 return False
+        
+        # Verify no-database mode is enabled
+        if not config.get('no_database_mode', {}).get('enabled', False):
+            print(f"✗ No-database mode not enabled in config")
+            return False
         
         print("✓ Configuration file valid")
         return True

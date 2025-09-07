@@ -12,9 +12,11 @@ auction_house:
   poll_interval_seconds: 60
   max_pages_per_cycle: 50
   enable_raw_capture: true
+  fee_basis_points: 100  # 1% auction house fee
 
-storage:
-  database_url: "postgresql://user:pass@localhost:5432/skyblock"
+# Database storage removed - using file-based storage only
+# storage:
+#   database_url: "postgresql://user:pass@localhost:5432/skyblock"
 
 no_database_mode:
   enabled: true
@@ -25,6 +27,11 @@ no_database_mode:
 features:
   lookbacks: [5, 15, 60]
   volatility_windows: [30]
+
+forecast:
+  default_horizons: [15, 60, 240]  # minutes
+  model_retrain_hours: 24
+  confidence_threshold: 0.6
 
 phase3:
   ml_models:

@@ -1,48 +1,23 @@
 import os
 import time
 import json
-import psycopg2
-import psycopg2.extras
 from datetime import datetime, timezone
 from typing import Dict, Any
 
 import yaml
 
 from ingestion.common.hypixel_client import HypixelClient
-# The storage instance is no longer needed for file mode, but we keep the import for DB mode logic
-from storage.ndjson_storage import get_storage_instance
 
 def load_config() -> Dict[str, Any]:
+    """Load configuration for no-database mode."""
     with open("config/config.yaml", "r") as f:
         cfg = yaml.safe_load(f)
-    # env interpolation for DATABASE_URL
-    db_url = os.getenv("DATABASE_URL") or cfg["storage"]["database_url"]
-    cfg["storage"]["database_url"] = db_url
     return cfg
 
-def upsert_bazaar_snapshot(conn, ts, product_id, qs):
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO bazaar_snapshots
-                (ts, product_id, buy_price, sell_price, buy_volume, sell_volume, buy_orders, sell_orders)
-            VALUES
-                (%s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (ts, product_id) DO NOTHING
-            """,
-            (
-                ts,
-                product_id,
-                qs.get("buyPrice"),
-                qs.get("sellPrice"),
-                qs.get("buyVolume"),
-                qs.get("sellVolume"),
-                qs.get("buyOrders"),
-                qs.get("sellOrders"),
-            ),
-        )
+# Database functions removed - using file-based storage only
 
 def run():
+    """Main bazaar collection loop (file-based storage only)."""
     cfg = load_config()
     client = HypixelClient(
         base_url=cfg["hypixel"]["base_url"],
@@ -53,37 +28,17 @@ def run():
     endpoint = cfg["hypixel"]["endpoints"]["bazaar"]
     poll_interval = cfg["hypixel"]["poll_interval_seconds"]
     
-    # Check if no-database mode is enabled
-    storage = get_storage_instance(cfg)
-    use_database = storage is None
-    
-    conn = None
-    if use_database:
-        db_url = cfg["storage"]["database_url"]
-        print("Connecting to DB...")
-        conn = psycopg2.connect(db_url)
-        conn.autocommit = True
-        print("Starting Bazaar collector loop (Database mode)...")
-    else:
-        print("Starting Bazaar collector loop (File-based mode)...")
+    print("Starting Bazaar collector loop (File-based mode)...")
 
     try:
         while True:
             ts = datetime.now(timezone.utc)
-            data = client.get_json(endpoint)
-            products = data.get("products", {})
-            count = 0
-            
-            if use_database:
-                with conn:
-                    with conn.cursor() as cur:
-                        for pid, pdata in products.items():
-                            qs = pdata.get("quick_status", {})
-                            upsert_bazaar_snapshot(conn, ts, pid, qs)
-                            count += 1
-                print(f"[{ts.isoformat()}] Upserted {count} bazaar snapshots to database")
-            else:
-                # --- MODIFIED SECTION FOR FILE MODE ---
+            try:
+                data = client.get_json(endpoint)
+                products = data.get("products", {})
+                count = 0
+                
+                # File-based storage
                 data_dir = cfg.get("no_database_mode", {}).get("data_directory", "data")
                 os.makedirs(data_dir, exist_ok=True)
                 output_path = os.path.join(data_dir, "bazaar_snapshots.ndjson")
@@ -110,11 +65,20 @@ def run():
                         f.write(json.dumps(record) + "\n")
                 
                 print(f"[{ts.isoformat()}] Wrote {count} bazaar snapshots to {output_path}")
+                
+            except Exception as e:
+                print(f"[{ts.isoformat()}] Error in bazaar collection cycle: {e}")
+                # Continue to next cycle after error
             
             time.sleep(poll_interval)
+            
+    except KeyboardInterrupt:
+        print("Bazaar collector stopped by user")
+    except Exception as e:
+        print(f"Bazaar collector error: {e}")
+        raise
     finally:
-        if conn:
-            conn.close()
+        print("Bazaar collector stopped")
 
 if __name__ == "__main__":
     run()

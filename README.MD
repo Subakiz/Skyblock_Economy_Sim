@@ -21,13 +21,17 @@ The SkyBlock Economy Bot provides automated data collection and interactive anal
 # Install dependencies
 pip install -r requirements.txt
 
-# Set environment variables
-export DISCORD_BOT_TOKEN="your_discord_bot_token"
-export HYPIXEL_API_KEY="your_hypixel_api_key"  # Optional
+# Set up environment variables in .env file
+cp .env.example .env
+# Edit .env and add your tokens:
+# DISCORD_BOT_TOKEN=your_discord_bot_token  
+# HYPIXEL_API_KEY=your_hypixel_api_key
 
 # Start the bot
 ./start_bot.sh
 ```
+
+See [ENV_SETUP_GUIDE.md](ENV_SETUP_GUIDE.md) for detailed setup instructions.
 
 See [DISCORD_BOT.md](DISCORD_BOT.md) for detailed setup and usage instructions.
 
@@ -69,10 +73,13 @@ See [DISCORD_BOT.md](DISCORD_BOT.md) for detailed setup and usage instructions.
 
 1) Prereqs
 - Python 3.10+
-- Postgres 14+ (TimescaleDB optional but recommended)
-- Env vars:
-  - `HYPIXEL_API_KEY`
+- Postgres 14+ (TimescaleDB optional but recommended)  
+- Environment variables in `.env` file:
+  - `DISCORD_BOT_TOKEN` (for Discord bot)
+  - `HYPIXEL_API_KEY` (for data ingestion)
   - `DATABASE_URL` (e.g., `postgresql://user:pass@localhost:5432/skyblock`)
+
+See [ENV_SETUP_GUIDE.md](ENV_SETUP_GUIDE.md) for environment setup details.
 
 2) Initialize DB
 - Run `psql "$DATABASE_URL" -f storage/schema.sql`

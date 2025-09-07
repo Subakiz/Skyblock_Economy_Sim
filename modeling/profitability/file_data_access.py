@@ -110,14 +110,11 @@ def compute_craft_cost_from_files(
 
 
 def load_config_for_file_mode() -> Dict[str, Any]:
-    """Load configuration and check for file mode."""
+    """Load configuration for file mode only (no database config needed)."""
     with open("config/config.yaml", "r") as f:
         cfg = yaml.safe_load(f)
     
-    # Override database URL from environment
-    db_url = os.getenv("DATABASE_URL") or cfg["storage"]["database_url"]
-    cfg["storage"]["database_url"] = db_url
-    
+    # No database configuration needed in no-database mode
     return cfg
 
 

@@ -85,10 +85,10 @@ def test_file_config_detection():
     """Test configuration detection for file mode."""
     print("\nTesting file mode configuration...")
     
-    # This should return None since no_database_mode.enabled is false in config
+    # This should return storage instance since no_database_mode.enabled is true in config
     storage = get_file_storage_if_enabled()
-    if storage is not None:
-        print("✗ File storage should be None when disabled in config")
+    if storage is None:
+        print("✗ File storage should not be None when enabled in config")
         return False
     
     print("✓ File mode configuration detection working")

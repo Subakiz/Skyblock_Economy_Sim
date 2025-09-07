@@ -271,9 +271,9 @@ async def analyze_command(interaction: discord.Interaction, item_name: str):
         
         logger.info(f"Running analysis for {item_name}")
         
-        # Run analysis using existing engine
+        # Run analysis using existing engine (in separate thread to avoid blocking)
         engine = FileBasedPredictiveMarketEngine()
-        results = engine.run_full_analysis([item_name], model_type='lightgbm')
+        results = await asyncio.to_thread(engine.run_full_analysis, [item_name], model_type='lightgbm')
         
         # Create response embed
         embed = discord.Embed(

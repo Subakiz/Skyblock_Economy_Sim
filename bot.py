@@ -1101,7 +1101,7 @@ async def plot_command(interaction: discord.Interaction, item_name: str):
             
             # If still no timestamp, look for date-like columns
             if timestamp_col is None:
-                date_like_cols = [col for col in df.columns if any(word in col.lower() for word in ['date', 'when', 'at'])]
+                date_like_cols = [col for col in df.columns if any(col.lower().endswith('_' + word) or col.lower().startswith(word + '_') or word in col.lower().split('_') for word in ['date', 'when']) or col.lower().endswith('_at')]
                 if date_like_cols:
                     timestamp_col = date_like_cols[0]
                     logger.debug(f"Using date-like column: {timestamp_col}")

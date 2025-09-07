@@ -1,7 +1,7 @@
 #!/bin/bash
-"""
-Launch script for SkyBlock Economy Discord Bot
-"""
+#
+# Launch script for SkyBlock Economy Discord Bot
+#
 
 set -e
 
@@ -21,13 +21,14 @@ if [[ ! -f "bot.py" ]]; then
 fi
 
 # Check Python version
-PYTHON_VERSION=$(python3 --version 2>&1 | cut -d' ' -f2 | cut -d'.' -f1-2)
-echo -e "Python version: ${GREEN}$PYTHON_VERSION${NC}"
-
-if [[ "$PYTHON_VERSION" < "3.8" ]]; then
-    echo -e "${RED}Error: Python 3.8+ is required${NC}"
+echo "Checking Python version..."
+if ! python3 -c 'import sys; assert sys.version_info >= (3, 8)'; then
+    PYTHON_VERSION=$(python3 --version 2>&1)
+    echo -e "${RED}Error: Python 3.8+ is required. You have: $PYTHON_VERSION${NC}"
     exit 1
 fi
+PYTHON_VERSION=$(python3 --version 2>&1 | cut -d' ' -f2)
+echo -e "Python version: ${GREEN}$PYTHON_VERSION${NC}"
 
 # Check for Discord bot token
 if [[ -z "$DISCORD_BOT_TOKEN" ]]; then
@@ -51,7 +52,9 @@ fi
 echo "Checking dependencies..."
 python3 -c "
 import sys
+# --- CORRECTED PACKAGE NAME ---
 required_packages = ['discord', 'pandas', 'yaml', 'numpy', 'lightgbm']
+# --- END CORRECTION ---
 missing = []
 
 for pkg in required_packages:

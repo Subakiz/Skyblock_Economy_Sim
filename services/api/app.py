@@ -1,6 +1,5 @@
 import os
 import json
-import psycopg2
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
@@ -24,9 +23,7 @@ except ImportError as e:
 
 app = FastAPI(title="SkyBlock Econ Model API", version="0.3.0")
 
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-# Check if file-based mode is enabled
+# File-based storage only (no database)
 FILE_STORAGE = get_file_storage_if_enabled()
 USE_FILES = FILE_STORAGE is not None
 
@@ -37,7 +34,7 @@ except Exception as e:
     print(f"Warning: Could not load item ontology: {e}")
     ITEM_ONTOLOGY = {}
 
-print(f"API starting in {'file-based' if USE_FILES else 'database'} mode")
+print(f"API starting in {'file-based' if USE_FILES else 'ERROR: no storage configured'} mode")
 
 class ForecastResponse(BaseModel):
     product_id: str
@@ -132,141 +129,88 @@ class BacktestResponse(BaseModel):
 def healthz():
     return {
         "status": "ok", 
-        "mode": "file-based" if USE_FILES else "database",
-        "data_source": "NDJSON files" if USE_FILES else "PostgreSQL"
+        "mode": "file-based" if USE_FILES else "ERROR: no storage configured",
+        "data_source": "NDJSON files" if USE_FILES else "None"
     }
 
 @app.get("/forecast/{product_id}", response_model=ForecastResponse)
 def get_forecast(product_id: str, horizon_minutes: int = 60):
-    if USE_FILES:
-        # File-based mode: get forecast from NDJSON files
-        try:
-            from modeling.forecast.file_ml_forecaster import get_latest_forecast_from_files
-            
-            forecast = get_latest_forecast_from_files(FILE_STORAGE, product_id, horizon_minutes)
-            
-            if not forecast:
-                raise HTTPException(status_code=404, detail="Forecast not found in files")
-            
-            return ForecastResponse(
-                product_id=product_id,
-                horizon_minutes=horizon_minutes,
-                ts=forecast.get('ts', datetime.now().isoformat()),
-                forecast_price=float(forecast.get('forecast_price', 0)),
-                model_version=forecast.get('model_version', 'file-based-v1'),
-            )
-        except ImportError:
-            raise HTTPException(
-                status_code=501,
-                detail="File-based forecasting dependencies not available"
-            )
-    
-    # Database mode
-    if not DATABASE_URL:
-        raise HTTPException(status_code=500, detail="DATABASE_URL not configured")
-    conn = psycopg2.connect(DATABASE_URL)
+    """Get price forecast for a product (file-based mode only)."""
+    if not USE_FILES:
+        raise HTTPException(
+            status_code=503,
+            detail="File-based storage not configured"
+        )
+        
+    # File-based mode: get forecast from NDJSON files
     try:
-        with conn.cursor() as cur:
-            cur.execute("""
-              SELECT ts, forecast_price, model_version
-              FROM model_forecasts
-              WHERE product_id = %s AND horizon_minutes = %s
-              ORDER BY ts DESC
-              LIMIT 1
-            """, (product_id, horizon_minutes))
-            row = cur.fetchone()
-            if not row:
-                raise HTTPException(status_code=404, detail="Forecast not found")
-            ts, price, version = row
-            return ForecastResponse(
-                product_id=product_id,
-                horizon_minutes=horizon_minutes,
-                ts=ts.isoformat(),
-                forecast_price=float(price),
-                model_version=version,
-            )
-    finally:
-        conn.close()
+        from modeling.forecast.file_ml_forecaster import get_latest_forecast_from_files
+        
+        forecast = get_latest_forecast_from_files(FILE_STORAGE, product_id, horizon_minutes)
+        
+        if not forecast:
+            raise HTTPException(status_code=404, detail="Forecast not found in files")
+        
+        return ForecastResponse(
+            product_id=product_id,
+            horizon_minutes=horizon_minutes,
+            ts=forecast.get('ts', datetime.now().isoformat()),
+            forecast_price=float(forecast.get('forecast_price', 0)),
+            model_version=forecast.get('model_version', 'file-based-v1'),
+        )
+    except ImportError:
+        raise HTTPException(
+            status_code=501,
+            detail="File-based forecasting dependencies not available"
+        )
 
 @app.get("/prices/ah/{product_id}", response_model=AHPriceResponse)
 def get_ah_prices(product_id: str, window: str = "1h"):
-    """Get Auction House price statistics for a product."""
+    """Get Auction House price statistics for a product (file-based mode only)."""
     
-    if USE_FILES:
-        # File-based mode
-        hours_back = 1 if window in ["1h", "4h"] else 0.25  # 15 minutes
-        stats = FILE_STORAGE.get_auction_price_stats(product_id, hours_back=int(hours_back * 2))
-        
-        if not stats or not stats.get("sale_count", 0):
-            raise HTTPException(status_code=404, detail="AH price data not found")
-        
-        return AHPriceResponse(
-            product_id=product_id,
-            window=window,
-            median_price=float(stats.get("median_price", 0)) if stats.get("median_price") else 0.0,
-            p25_price=float(stats.get("p25_price", 0)) if stats.get("p25_price") else 0.0,
-            p75_price=float(stats.get("p75_price", 0)) if stats.get("p75_price") else 0.0,
-            sale_count=int(stats.get("sale_count", 0)),
-            last_updated=datetime.now().isoformat()  # Approximation
+    if not USE_FILES:
+        raise HTTPException(
+            status_code=503,
+            detail="File-based storage not configured"
         )
+        
+    # File-based mode
+    hours_back = 1 if window in ["1h", "4h"] else 0.25  # 15 minutes
+    stats = FILE_STORAGE.get_auction_price_stats(product_id, hours_back=int(hours_back * 2))
     
-    # Database mode
-    if not DATABASE_URL:
-        raise HTTPException(status_code=500, detail="DATABASE_URL not configured")
+    if not stats or not stats.get("sale_count", 0):
+        raise HTTPException(status_code=404, detail="AH price data not found")
     
-    # Map window to view table
-    view_name = "ah_prices_1h" if window in ["1h", "4h"] else "ah_prices_15m"
-    
-    conn = psycopg2.connect(DATABASE_URL)
-    try:
-        with conn.cursor() as cur:
-            cur.execute(f"""
-                SELECT median_price, p25_price, p75_price, sale_count, time_bucket
-                FROM {view_name}
-                WHERE item_id = %s
-                ORDER BY time_bucket DESC
-                LIMIT 1
-            """, (product_id,))
-            
-            row = cur.fetchone()
-            if not row:
-                raise HTTPException(status_code=404, detail="AH price data not found")
-                
-            median, p25, p75, count, last_updated = row
-            
-            return AHPriceResponse(
-                product_id=product_id,
-                window=window,
-                median_price=float(median) if median else 0.0,
-                p25_price=float(p25) if p25 else 0.0,
-                p75_price=float(p75) if p75 else 0.0,
-                sale_count=int(count) if count else 0,
-                last_updated=last_updated.isoformat()
-            )
-    finally:
-        conn.close()
+    return AHPriceResponse(
+        product_id=product_id,
+        window=window,
+        median_price=float(stats.get("median_price", 0)) if stats.get("median_price") else 0.0,
+        p25_price=float(stats.get("p25_price", 0)) if stats.get("p25_price") else 0.0,
+        p75_price=float(stats.get("p75_price", 0)) if stats.get("p75_price") else 0.0,
+        sale_count=int(stats.get("sale_count", 0)),
+        last_updated=datetime.now().isoformat()  # Approximation
+    )
 
 @app.get("/profit/craft/{product_id}", response_model=CraftProfitResponse)
 def get_craft_profitability(product_id: str, horizon: str = "1h", pricing: str = "median"):
-    """Get craft profitability analysis for a product."""
+    """Get craft profitability analysis for a product (file-based mode only)."""
     
     if not ITEM_ONTOLOGY:
         raise HTTPException(status_code=500, detail="Item ontology not available")
     
-    # Check which mode we're in
-    conn = None
     if not USE_FILES:
-        if not DATABASE_URL:
-            raise HTTPException(status_code=500, detail="DATABASE_URL not configured")
-        conn = psycopg2.connect(DATABASE_URL)
+        raise HTTPException(
+            status_code=503,
+            detail="File-based storage not configured"
+        )
     
     try:
         # Get AH fee from config (hardcoded for now)
         ah_fee_bps = 100
         
-        # This function automatically detects file vs database mode
+        # Call compute_profitability with conn=None to use file-based mode
         result = compute_profitability(
-            conn, ITEM_ONTOLOGY, product_id, horizon, pricing, ah_fee_bps
+            None, ITEM_ONTOLOGY, product_id, horizon, pricing, ah_fee_bps
         )
         
         return CraftProfitResponse(
@@ -286,9 +230,6 @@ def get_craft_profitability(product_id: str, horizon: str = "1h", pricing: str =
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
-    finally:
-        if conn:
-            conn.close()
 
 @app.post("/backtest/run", response_model=BacktestResponse)
 def run_backtest(request: BacktestRequest):
@@ -394,71 +335,6 @@ def train_ml_model(request: MLForecastRequest):
             raise HTTPException(status_code=501, detail=f"File-based ML training dependencies not available: {e}")
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"File-based ML training error: {str(e)}")
-    
-    try:
-        # Train the model and get predictions
-        train_and_forecast_ml(
-            product_id=request.product_id,
-            model_type=request.model_type,
-            horizons=tuple(request.horizons)
-        )
-        
-        # Load the trained model to get feature importance and metrics
-        from modeling.forecast.ml_forecaster import fetch_multivariate_series, create_features_targets
-        
-        conn = psycopg2.connect(DATABASE_URL)
-        try:
-            df = fetch_multivariate_series(conn, request.product_id)
-            if df is None:
-                raise HTTPException(status_code=404, detail="Insufficient data for ML training")
-            
-            datasets = create_features_targets(df, request.horizons)
-            forecaster = MLForecaster(model_type=request.model_type)
-            
-            predictions = {}
-            feature_importance = {}
-            training_metrics = {}
-            
-            # Get latest features for prediction
-            feature_names = [
-                'ma_15', 'ma_60', 'spread_bps', 'vol_window_30',
-                'price_lag_1', 'price_lag_5', 'momentum_1', 'momentum_5',
-                'ma_crossover', 'ma_ratio', 'vol_price_ratio',
-                'hour_of_day', 'day_of_week', 'day_of_month',
-                'market_volatility', 'market_momentum'
-            ]
-            
-            for col in feature_names:
-                if col not in df.columns:
-                    df[col] = 0.0
-            
-            latest_features = df[feature_names].iloc[-1:].values
-            
-            for horizon in request.horizons:
-                if horizon in datasets:
-                    X, y = datasets[horizon]
-                    metrics = forecaster.train(X, y, horizon)
-                    pred = forecaster.predict(latest_features, horizon)[0]
-                    
-                    predictions[horizon] = float(pred)
-                    feature_importance[str(horizon)] = forecaster.get_feature_importance(horizon)
-                    training_metrics[str(horizon)] = metrics
-            
-            return MLForecastResponse(
-                product_id=request.product_id,
-                model_type=request.model_type,
-                predictions=predictions,
-                feature_importance=feature_importance,
-                training_metrics=training_metrics,
-                timestamp=datetime.now().isoformat()
-            )
-            
-        finally:
-            conn.close()
-            
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"ML training error: {str(e)}")
 
 @app.post("/simulation/market", response_model=MarketSimulationResponse)
 def run_market_simulation(request: MarketSimulationRequest):

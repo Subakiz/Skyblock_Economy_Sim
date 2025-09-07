@@ -1045,17 +1045,33 @@ async def plot_command(interaction: discord.Interaction, item_name: str):
             
         else:
             # Process real data
-            df = pd.concat(dfs).sort_values('ts')
-            df['ts'] = pd.to_datetime(df['ts'])
+            df = pd.concat(dfs)
+            
+            # Flexible timestamp column detection
+            timestamp_columns = ['timestamp', 'collected_at', 'ts', 'scan_timestamp', 'start_timestamp', 'end_timestamp']
+            timestamp_col = None
+            
+            for col_name in timestamp_columns:
+                if col_name in df.columns:
+                    timestamp_col = col_name
+                    break
+            
+            if timestamp_col is None:
+                await interaction.followup.send("❌ No timestamp column found in the data. Cannot create time-series plot.")
+                return
+            
+            # Sort by timestamp and convert to datetime
+            df = df.sort_values(timestamp_col)
+            df[timestamp_col] = pd.to_datetime(df[timestamp_col])
             
             # Create the plot
             plt.figure(figsize=(12, 6))
             
             if 'buy_price' in df.columns and not df['buy_price'].isna().all():
-                plt.plot(df['ts'], df['buy_price'], label='Buy Price', linewidth=2, alpha=0.8)
+                plt.plot(df[timestamp_col], df['buy_price'], label='Buy Price', linewidth=2, alpha=0.8)
             
             if 'sell_price' in df.columns and not df['sell_price'].isna().all():
-                plt.plot(df['ts'], df['sell_price'], label='Sell Price', linewidth=2, alpha=0.8)
+                plt.plot(df[timestamp_col], df['sell_price'], label='Sell Price', linewidth=2, alpha=0.8)
             
             plt.title(f'{item_name} - Price History', fontsize=16, fontweight='bold')
             plt.xlabel('Time', fontsize=12)

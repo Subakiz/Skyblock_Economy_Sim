@@ -413,21 +413,8 @@ class AuctionSniper(commands.Cog):
             # Load recent Parquet data (last few partitions for current market conditions)
             dataset = pq.ParquetDataset(self.PARQUET_DATA_PATH)
             
-            # Get recent partitions only (for real-time market data)
-            all_partitions = []
-            for piece in dataset.pieces:
-                partition_info = piece.get_metadata().metadata
-                all_partitions.append((piece, partition_info))
-            
-            # Sort by modification time and take recent data
-            all_partitions.sort(key=lambda x: x[0].path.stat().st_mtime if hasattr(x[0].path, 'stat') else 0, reverse=True)
-            recent_pieces = [p[0] for p in all_partitions[:10]]  # Last 10 partitions
-            
-            # Read recent data
-            if recent_pieces:
-                df = pa.concat_tables([piece.read() for piece in recent_pieces]).to_pandas()
-            else:
-                df = dataset.read().to_pandas()
+            # Read all data using modern PyArrow API
+            df = dataset.read().to_pandas()
             
             if df.empty:
                 self.logger.debug("Empty Parquet dataset")

@@ -924,7 +924,7 @@ async def plot_command(interaction: discord.Interaction, item_name: str):
         if not dfs:
             # Generate a sample chart to demonstrate functionality
             dates = pd.date_range('2024-01-01', periods=100, freq='h')
-            prices = 100 + np.random.cumsum(np.random.randn(100) * 2)  # Random walk
+            prices = 100 + np.cumsum(np.random.randn(100) * 2)  # Random walk
             
             plt.figure(figsize=(12, 6))
             plt.plot(dates, prices, linewidth=2, color='#1f77b4')
@@ -1032,8 +1032,8 @@ async def plot_command(interaction: discord.Interaction, item_name: str):
             await interaction.followup.send(embed=embed, file=file)
         
     except Exception as e:
-        logger.error(f"Plot command failed: {e}")
-        await interaction.followup.send(f"❌ Failed to generate chart: {str(e)}")
+        logger.error(f"Failed to generate plot: {e}", exc_info=True)
+        await interaction.followup.send("❌ An internal error occurred while generating the chart.")
 
 
 def main():

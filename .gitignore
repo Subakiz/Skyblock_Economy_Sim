@@ -151,6 +151,10 @@ data/
 models/*.pkl
 models/*.joblib
 
+# Runtime files
+logs/*.pid
+logs/*.log
+
 # Frontend Node.js
 frontend/node_modules/
 frontend/dist/

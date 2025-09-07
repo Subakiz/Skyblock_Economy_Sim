@@ -21,9 +21,11 @@ import pyarrow.parquet as pq
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
+import aiofiles
 
 # Import project modules
 from ingestion.common.hypixel_client import HypixelClient
+from ingestion.item_processing import create_canonical_name
 
 
 class AuctionSniper(commands.Cog):
@@ -134,22 +136,23 @@ class AuctionSniper(commands.Cog):
         except Exception as e:
             self.logger.error(f"Failed to load saved config: {e}")
     
-    def _save_persisted_data(self):
-        """Save watchlist and FMV data to disk."""
+    async def _save_persisted_data(self):
+        """Save watchlist and FMV data to disk asynchronously."""
         try:
             # Save watchlist
             watchlist_file = self.data_dir / "auction_watchlist.json"
-            with open(watchlist_file, "w") as f:
-                json.dump({
-                    "items": list(self.auction_watchlist),
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                    "count": len(self.auction_watchlist)
-                }, f, indent=2)
+            watchlist_data = {
+                "items": list(self.auction_watchlist),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "count": len(self.auction_watchlist)
+            }
+            async with aiofiles.open(watchlist_file, "w") as f:
+                await f.write(json.dumps(watchlist_data, indent=2))
             
             # Save FMV data
             fmv_file = self.data_dir / "fmv_cache.json"
-            with open(fmv_file, "w") as f:
-                json.dump(self.fmv_data, f, indent=2)
+            async with aiofiles.open(fmv_file, "w") as f:
+                await f.write(json.dumps(self.fmv_data, indent=2))
             
             self.logger.debug("Saved persisted data to disk")
         
@@ -180,14 +183,14 @@ class AuctionSniper(commands.Cog):
             
             self.logger.info(f"Started sniper tasks: Hunter ({hunter_interval}s), Intelligence ({intelligence_interval}s)")
     
-    def cog_unload(self):
+    async def cog_unload(self):
         """Clean shutdown of tasks."""
         self.logger.info("Shutting down auction sniper tasks...")
         if self.high_frequency_snipe_scan.is_running():
             self.high_frequency_snipe_scan.cancel()
         if self.update_market_intelligence.is_running():
             self.update_market_intelligence.cancel()
-        self._save_persisted_data()
+        await self._save_persisted_data()
     
     @tasks.loop(seconds=2)  # Default, will be updated from config
     async def high_frequency_snipe_scan(self):
@@ -215,8 +218,16 @@ class AuctionSniper(commands.Cog):
                         continue
                     
                     item_name = auction.get("item_name", "").strip()
-                    if not item_name or item_name not in self.auction_watchlist:
+                    item_lore = auction.get("item_lore", "")
+                    
+                    # Generate canonical name for consistency with ingested data
+                    canonical_name = create_canonical_name(item_name, item_lore)
+                    
+                    if not canonical_name or canonical_name not in self.auction_watchlist:
                         continue
+                    
+                    # Update auction with canonical name for verification
+                    auction["item_name"] = canonical_name
                     
                     # Passed initial filters, do intensive verification
                     if await self._verify_snipe(auction):
@@ -270,7 +281,7 @@ class AuctionSniper(commands.Cog):
                 self.update_market_values_from_parquet()
                 
                 # Persist updated data
-                self._save_persisted_data()
+                await self._save_persisted_data()
                 
                 processing_time = time.time() - start_time
                 self.logger.info(f"Market intelligence updated: {len(self.auction_watchlist)} watchlist items, "
@@ -333,9 +344,12 @@ class AuctionSniper(commands.Cog):
             self.logger.error(f"Failed to update watchlist: {e}")
     
     async def _update_fmv_data(self, auctions: List[Dict[str, Any]]):
-        """Update Fair Market Value data for watchlist items."""
+        """
+        Update Fair Market Value data for watchlist items.
+        Uses second-lowest BIN price methodology for accurate FMV calculation.
+        """
         try:
-            # Group auctions by item
+            # Group auctions by item (BIN only)
             item_prices = defaultdict(list)
             
             for auction in auctions:
@@ -348,70 +362,135 @@ class AuctionSniper(commands.Cog):
                     except (ValueError, TypeError):
                         continue
             
-            # Calculate FMV statistics
+            # Calculate FMV statistics using second-lowest BIN price
             for item_name, prices in item_prices.items():
-                if len(prices) >= 3:  # Need at least 3 data points
+                if len(prices) >= 2:
                     prices.sort()
-                    # Remove outliers (bottom and top 10%)
-                    trim_count = max(1, len(prices) // 10)
-                    trimmed_prices = prices[trim_count:-trim_count] if len(prices) > 2 * trim_count else prices
                     
-                    if trimmed_prices:
-                        fmv = sum(trimmed_prices) / len(trimmed_prices)
-                        median = trimmed_prices[len(trimmed_prices) // 2]
+                    # Filter out extreme outliers (prices > 10x median for sanity)
+                    median_price = prices[len(prices) // 2]
+                    filtered_prices = [p for p in prices if p <= median_price * 10]
+                    
+                    if len(filtered_prices) >= 2:
+                        # Use second-lowest BIN price as FMV
+                        fmv = filtered_prices[1]  # Second lowest
+                        median = filtered_prices[len(filtered_prices) // 2]
                         
                         self.fmv_data[item_name] = {
                             "fmv": fmv,
                             "median": median,
                             "samples": len(prices),
-                            "updated_at": datetime.now(timezone.utc).isoformat()
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                            "method": "second_lowest_bin"
+                        }
+                    elif len(filtered_prices) == 1:
+                        # Only one price available, use it but with discount
+                        fmv = filtered_prices[0] * 0.95  # 5% discount for single sample
+                        self.fmv_data[item_name] = {
+                            "fmv": fmv,
+                            "median": filtered_prices[0],
+                            "samples": 1,
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                            "method": "single_bin_discounted"
                         }
             
-            self.logger.debug(f"Updated FMV data for {len(item_prices)} items")
+            self.logger.debug(f"Updated FMV data using second-lowest BIN price for {len(item_prices)} items")
         
         except Exception as e:
             self.logger.error(f"Failed to update FMV data: {e}")
     
     def update_market_values_from_parquet(self):
-        """Update market values cache from Parquet dataset."""
+        """
+        Update market values cache from Parquet dataset.
+        Uses second-lowest BIN price methodology for accurate FMV calculation.
+        """
         try:
             # Check if Parquet data exists
             if not self.PARQUET_DATA_PATH.exists() or not any(self.PARQUET_DATA_PATH.iterdir()):
                 self.logger.debug("No Parquet data found for market analysis")
                 return
             
-            # Load Parquet dataset
+            # Load recent Parquet data (last few partitions for current market conditions)
             dataset = pq.ParquetDataset(self.PARQUET_DATA_PATH)
-            df = dataset.read().to_pandas()
+            
+            # Get recent partitions only (for real-time market data)
+            all_partitions = []
+            for piece in dataset.pieces:
+                partition_info = piece.get_metadata().metadata
+                all_partitions.append((piece, partition_info))
+            
+            # Sort by modification time and take recent data
+            all_partitions.sort(key=lambda x: x[0].path.stat().st_mtime if hasattr(x[0].path, 'stat') else 0, reverse=True)
+            recent_pieces = [p[0] for p in all_partitions[:10]]  # Last 10 partitions
+            
+            # Read recent data
+            if recent_pieces:
+                df = pa.concat_tables([piece.read() for piece in recent_pieces]).to_pandas()
+            else:
+                df = dataset.read().to_pandas()
             
             if df.empty:
                 self.logger.debug("Empty Parquet dataset")
                 return
             
-            # Calculate median prices for watchlist items
-            watchlist_items = df[df['item_name'].isin(self.auction_watchlist)]
+            # Filter for BIN auctions only (for accurate market pricing)
+            bin_auctions = df[df['bin'] == True].copy()
+            
+            if bin_auctions.empty:
+                self.logger.debug("No BIN auctions found in Parquet data")
+                return
+            
+            # Calculate second-lowest BIN price for watchlist items
+            watchlist_items = bin_auctions[bin_auctions['item_name'].isin(self.auction_watchlist)]
             
             if watchlist_items.empty:
                 self.logger.debug("No watchlist items found in Parquet data")
                 return
             
-            # Group by item_name and calculate median price
-            median_prices = watchlist_items.groupby('item_name')['price'].median()
-            
-            # Update fmv_data cache with new values
-            for item_name, median_price in median_prices.items():
-                item_count = len(watchlist_items[watchlist_items['item_name'] == item_name])
+            # Group by item_name and calculate FMV using second-lowest BIN price
+            fmv_data = {}
+            for item_name in watchlist_items['item_name'].unique():
+                item_data = watchlist_items[watchlist_items['item_name'] == item_name]
                 
-                # Only update if we have sufficient data points
-                if item_count >= 3:
-                    self.fmv_data[item_name] = {
-                        "fmv": float(median_price),
-                        "median": float(median_price),
-                        "samples": item_count,
-                        "updated_at": datetime.now(timezone.utc).isoformat()
+                # Filter out extreme outliers (prices > 10x median for sanity)
+                median_price = item_data['price'].median()
+                if median_price > 0:
+                    # Remove prices that are clearly outliers (more than 10x median)
+                    filtered_data = item_data[item_data['price'] <= median_price * 10]
+                    if len(filtered_data) >= 2:
+                        item_data = filtered_data
+                
+                # Sort prices and get second-lowest
+                sorted_prices = item_data['price'].sort_values().tolist()
+                
+                if len(sorted_prices) >= 2:
+                    # Use second-lowest BIN price as FMV (represents real resale market)
+                    fmv = sorted_prices[1]  # Second lowest
+                    median = item_data['price'].median()
+                    
+                    fmv_data[item_name] = {
+                        "fmv": float(fmv),
+                        "median": float(median),
+                        "samples": len(sorted_prices),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                        "method": "second_lowest_bin"
+                    }
+                elif len(sorted_prices) == 1:
+                    # Only one price available, use it but with low confidence
+                    fmv = sorted_prices[0]
+                    fmv_data[item_name] = {
+                        "fmv": float(fmv) * 0.95,  # Apply 5% discount for single sample
+                        "median": float(fmv),
+                        "samples": 1,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                        "method": "single_bin_discounted"
                     }
             
-            self.logger.debug(f"Updated market values from Parquet for {len(median_prices)} items")
+            # Update the cache
+            for item_name, data in fmv_data.items():
+                self.fmv_data[item_name] = data
+            
+            self.logger.debug(f"Updated FMV data using second-lowest BIN price for {len(fmv_data)} items")
             
         except Exception as e:
             self.logger.error(f"Failed to update market values from Parquet: {e}")
@@ -419,7 +498,7 @@ class AuctionSniper(commands.Cog):
     async def _verify_snipe(self, auction: Dict[str, Any]) -> bool:
         """
         Verify if an auction is a valid snipe opportunity.
-        Includes manipulation, attribute, and profitability checks.
+        Includes manipulation, attribute, profitability, and liquidity checks.
         """
         try:
             item_name = auction.get("item_name", "").strip()
@@ -439,9 +518,26 @@ class AuctionSniper(commands.Cog):
             
             fmv = fmv_info.get("fmv", 0)
             samples = fmv_info.get("samples", 0)
+            fmv_method = fmv_info.get("method", "unknown")
             
-            # Require sufficient data points for reliability
-            if samples < 5:
+            # Enhanced Liquidity Check: Ensure sufficient market activity
+            min_samples_config = self.config.get("auction_sniper", {}).get("min_liquidity_samples", 10)
+            
+            # Require more samples for high-value items (reduce risk)
+            if price > 10_000_000:  # Over 10M coins
+                min_samples_required = max(min_samples_config, 15)
+            elif price > 1_000_000:  # Over 1M coins  
+                min_samples_required = max(min_samples_config, 8)
+            else:
+                min_samples_required = max(min_samples_config, 5)
+            
+            if samples < min_samples_required:
+                self.logger.debug(f"Skipping {item_name}: insufficient liquidity ({samples} < {min_samples_required} samples)")
+                return False
+            
+            # Special handling for single-sample discounted items (very low liquidity)
+            if fmv_method == "single_bin_discounted":
+                self.logger.debug(f"Skipping {item_name}: too low liquidity (single sample)")
                 return False
             
             # Use configurable multiplier from config
@@ -467,8 +563,14 @@ class AuctionSniper(commands.Cog):
             if profit_margin < 0.05:
                 return False
             
+            # Final liquidity check: Ensure profit justifies risk for low-liquidity items
+            if samples < 20 and estimated_profit < self.profit_threshold * 2:
+                self.logger.debug(f"Skipping {item_name}: low liquidity requires higher profit ({estimated_profit:,.0f} < {self.profit_threshold * 2:,.0f})")
+                return False
+            
             self.logger.info(f"Valid snipe found: {item_name} at {price:,.0f} coins "
-                           f"(FMV: {fmv:,.0f}, Profit: {estimated_profit:,.0f}, Margin: {profit_margin:.1%})")
+                           f"(FMV: {fmv:,.0f}, Profit: {estimated_profit:,.0f}, Margin: {profit_margin:.1%}, "
+                           f"Samples: {samples}, Method: {fmv_method})")
             return True
         
         except Exception as e:
@@ -620,8 +722,11 @@ class AuctionSniper(commands.Cog):
                               profit_threshold: Optional[int] = None, 
                               min_auction_count: Optional[int] = None):
         """Configure sniper parameters."""
+        # Immediately defer the response to avoid timeout
+        await interaction.response.defer()
+        
         if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ You need Administrator permissions to configure the sniper.", ephemeral=True)
+            await interaction.followup.send("❌ You need Administrator permissions to configure the sniper.", ephemeral=True)
             return
         
         if profit_threshold is not None:
@@ -638,7 +743,7 @@ class AuctionSniper(commands.Cog):
         embed.add_field(name="📊 Min Auction Count", value=str(self.min_auction_count), inline=True)
         embed.add_field(name="📝 Watchlist Size", value=str(len(self.auction_watchlist)), inline=True)
         
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
         self.logger.info(f"Sniper configuration updated: profit_threshold={self.profit_threshold}, min_auction_count={self.min_auction_count}")
     
     @app_commands.command(name="sniper_status", description="Check sniper status and statistics")
@@ -672,7 +777,7 @@ class AuctionSniper(commands.Cog):
         await interaction.response.send_message(embed=embed)
     
     async def _save_sniper_config(self):
-        """Save sniper configuration to disk."""
+        """Save sniper configuration to disk asynchronously."""
         try:
             config_file = self.data_dir / "sniper_config.json"
             config_data = {
@@ -682,8 +787,8 @@ class AuctionSniper(commands.Cog):
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }
             
-            with open(config_file, "w") as f:
-                json.dump(config_data, f, indent=2)
+            async with aiofiles.open(config_file, "w") as f:
+                await f.write(json.dumps(config_data, indent=2))
             
             self.logger.debug("Saved sniper configuration")
         

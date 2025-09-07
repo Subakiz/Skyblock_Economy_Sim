@@ -152,77 +152,116 @@ def calculate_auction_features(df: pd.DataFrame) -> pd.DataFrame:
     if 'timestamp' in df.columns:  # For ended auctions
         df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
     
-    features_list = []
+    # Create a copy of the dataframe to work with
+    features_df = df.copy()
     
-    for _, row in df.iterrows():
-        feature_row = row.to_dict().copy()
+    # Vectorized calculation of duration and price_per_hour
+    valid_duration_mask = pd.notna(features_df.get('start_time')) & pd.notna(features_df.get('end_time'))
+    if valid_duration_mask.any():
+        duration = features_df.loc[valid_duration_mask, 'end_time'] - features_df.loc[valid_duration_mask, 'start_time']
+        duration_hours = np.maximum(0.1, duration.dt.total_seconds() / 3600)
         
-        # Calculate price_per_hour
-        if pd.notna(row.get('start_time')) and pd.notna(row.get('end_time')):
-            duration = row['end_time'] - row['start_time']
-            duration_hours = max(0.1, duration.total_seconds() / 3600)  # At least 0.1 hour
-            
-            # Use appropriate price
-            if row.get('bin', False) and row.get('starting_bid', 0) > 0:
-                price = row['starting_bid']  # BIN price
-            elif row.get('sale_price', 0) > 0:  # Ended auction
-                price = row['sale_price']
-            elif row.get('highest_bid', 0) > 0:
-                price = row['highest_bid']
-            else:
-                price = row.get('starting_bid', 0)
-            
-            feature_row['price_per_hour'] = price / duration_hours if duration_hours > 0 else 0
-        else:
-            feature_row['price_per_hour'] = 0
+        # Vectorized price selection logic
+        # Priority: BIN price -> sale_price -> highest_bid -> starting_bid
+        price = np.select([
+            (features_df.loc[valid_duration_mask, 'bin']) & (features_df.loc[valid_duration_mask, 'starting_bid'] > 0),
+            features_df.loc[valid_duration_mask, 'sale_price'].fillna(0) > 0,
+            features_df.loc[valid_duration_mask, 'highest_bid'].fillna(0) > 0
+        ], [
+            features_df.loc[valid_duration_mask, 'starting_bid'],
+            features_df.loc[valid_duration_mask, 'sale_price'],
+            features_df.loc[valid_duration_mask, 'highest_bid']
+        ], default=features_df.loc[valid_duration_mask, 'starting_bid'].fillna(0))
         
-        # Extract item name features
-        item_name = row.get('item_name', '')
-        name_features = extract_item_name_features(item_name)
-        feature_row.update(name_features)
-        
-        # Add final sale price (use sale_price if available, otherwise highest_bid or starting_bid)
-        if 'sale_price' in row and pd.notna(row['sale_price']) and row['sale_price'] > 0:
-            feature_row['final_price'] = row['sale_price']
-        elif row.get('highest_bid', 0) > 0:
-            feature_row['final_price'] = row['highest_bid']
-        else:
-            feature_row['final_price'] = row.get('starting_bid', 0)
-        
-        # Add timestamp for sorting (use end_time, timestamp, or start_time)
-        if pd.notna(row.get('end_time')):
-            feature_row['ts'] = row['end_time']
-        elif pd.notna(row.get('timestamp')):
-            feature_row['ts'] = row['timestamp']
-        elif pd.notna(row.get('start_time')):
-            feature_row['ts'] = row['start_time']
-        else:
-            feature_row['ts'] = datetime.now(timezone.utc)
-        
-        features_list.append(feature_row)
+        features_df.loc[valid_duration_mask, 'price_per_hour'] = price / duration_hours
     
-    features_df = pd.DataFrame(features_list)
+    # Set price_per_hour to 0 for rows without valid duration
+    if 'price_per_hour' not in features_df.columns:
+        features_df['price_per_hour'] = 0.0
+    features_df.loc[~valid_duration_mask, 'price_per_hour'] = 0.0
     
-    # Calculate rolling average prices for each item
+    # Vectorized final price calculation
+    # Priority: sale_price -> highest_bid -> starting_bid
+    features_df['final_price'] = np.select([
+        features_df['sale_price'].fillna(0) > 0,
+        features_df['highest_bid'].fillna(0) > 0
+    ], [
+        features_df['sale_price'],
+        features_df['highest_bid']
+    ], default=features_df['starting_bid'].fillna(0))
+    
+    # Vectorized timestamp selection (use end_time, timestamp, or start_time)
+    now_timestamp = datetime.now(timezone.utc)
+    features_df['ts'] = np.select([
+        pd.notna(features_df.get('end_time')),
+        pd.notna(features_df.get('timestamp')),
+        pd.notna(features_df.get('start_time'))
+    ], [
+        features_df.get('end_time'),
+        features_df.get('timestamp'), 
+        features_df.get('start_time')
+    ], default=now_timestamp)
+    
+    # Vectorized item name feature extraction (simplified for performance)
+    if 'item_name' in features_df.columns:
+        item_names = features_df['item_name'].fillna('')
+        item_names_lower = item_names.str.lower()
+        
+        # Vectorized enchantment detection
+        enchant_patterns = '|'.join(['sharpness', 'critical', 'ender', 'giant_killer', 'cubism',
+                                   'smite', 'bane_of_arthropods', 'cleave', 'execute', 'first_strike',
+                                   'lethality', 'life_steal', 'looting', 'luck', 'scavenger',
+                                   'vampirism', 'venomous', 'protection', 'growth', 'thorns'])
+        features_df['is_clean'] = ~item_names_lower.str.contains(enchant_patterns, na=False)
+        features_df['enchantment_count'] = item_names_lower.str.count(enchant_patterns)
+        
+        # Vectorized reforge detection
+        reforge_patterns = '|'.join(['^ancient ', '^fabled ', '^legendary ', '^epic ', '^rare ', '^uncommon ',
+                                   '^gentle ', '^odd ', '^fast ', '^fair ', '^sharp ', '^heroic ',
+                                   '^spicy ', '^renowned ', '^beloved ', '^pure ', '^smart ', '^wise '])
+        features_df['has_reforge'] = item_names_lower.str.contains(reforge_patterns, na=False)
+        
+        # Vectorized rarity tier determination
+        features_df['rarity_tier'] = np.select([
+            item_names_lower.str.contains('hyperion|necron', na=False),
+            item_names_lower.str.contains('dragon|divan|shadow', na=False)
+        ], ['legendary', 'epic'], default='common')
+    else:
+        # Default values if no item_name column
+        features_df['is_clean'] = True
+        features_df['enchantment_count'] = 0
+        features_df['has_reforge'] = False
+        features_df['rarity_tier'] = 'common'
+    
+    # Calculate rolling average prices for each item using time-based windows
     features_df = features_df.sort_values('ts')
     
-    # Group by item_id and calculate rolling averages
+    # Group by item_name and calculate time-based rolling averages
     def calculate_rolling_avg(group):
+        if group.empty:
+            return group
         group = group.sort_values('ts')
-        # Simple rolling averages with a window size instead of time-based
+        
+        # Set timestamp as index for time-based rolling windows
+        group = group.set_index('ts')
+        
+        # Time-based rolling averages (24h and 7D)
         group['rolling_avg_price_24h'] = group['final_price'].rolling(
-            window=24, min_periods=1
+            window='24h', min_periods=1
         ).mean()
-        # 7-day rolling average  
         group['rolling_avg_price_7d'] = group['final_price'].rolling(
-            window=168, min_periods=1
+            window='7D', min_periods=1
         ).mean()
-        return group
+        
+        # Reset index to restore 'ts' as a column
+        return group.reset_index()
     
-    if 'item_id' in features_df.columns and not features_df.empty:
-        features_df = features_df.groupby('item_id').apply(calculate_rolling_avg).reset_index(drop=True)
+    if 'item_name' in features_df.columns and not features_df.empty:
+        # Use a more compatible approach for groupby.apply
+        grouped = features_df.groupby('item_name', group_keys=False)
+        features_df = pd.concat([calculate_rolling_avg(group) for name, group in grouped], ignore_index=True)
     else:
-        # Fallback if no item_id grouping possible
+        # Fallback if no item_name grouping possible
         features_df['rolling_avg_price_24h'] = features_df['final_price']
         features_df['rolling_avg_price_7d'] = features_df['final_price']
     

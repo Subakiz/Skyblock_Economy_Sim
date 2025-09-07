@@ -31,18 +31,35 @@ Focused price prediction for a specific item and time horizon
 - Uses LightGBM models trained on historical data
 - Provides training status feedback
 
-#### `/plot <item_name>` 
-Generate price history chart for a specific item
-- Creates visual charts showing price trends over time
-- Displays both buy and sell prices when available
-- Shows average prices and data point statistics
-- Returns chart as a PNG image attachment
+#### `/compare <item_a> <item_b>` ⭐ NEW
+Cross-item arbitrage analysis comparing two items
+- Price predictions for both items
+- Relative value assessment and investment recommendations
+- Crafting arbitrage opportunities detection
+- Price correlation analysis with statistical measures
+- Example: `/compare HYPERION NECRON_CHESTPLATE`
 
-#### `/retrain <item_name>` 
-Admin-only command to manually retrain models
-- Requires administrator permissions
-- Retrains models for all supported horizons
-- Useful when new data is available
+#### `/event_impact <event_name>` ⭐ NEW
+Analyze the impact of historical SkyBlock events on market prices
+- Event details (type, dates, description)
+- Market effects on different item categories
+- List of affected items
+- Investment recommendations based on event impact
+- Autocomplete support for event names
+- Example: `/event_impact MAYOR_DERPY`
+
+#### `/market_pulse` ⭐ NEW
+Holistic market overview and sentiment analysis
+- Overall market sentiment (Bullish/Bearish/Neutral)
+- Sector performance across 6 key market baskets:
+  - Dungeons Index (high-tier dungeon items)
+  - Farming Index (farming tools and crops)
+  - Mining Index (mining equipment and ores)
+  - Skill Items Index (experience and training items)
+  - Luxury Items Index (rare pets and collectibles)
+  - Commodities Index (basic materials and enchanted blocks)
+- Market insights and trend analysis
+- Summary statistics and positive sector count
 
 ## Setup
 
@@ -77,6 +94,37 @@ no_database_mode:
   enabled: true
   data_directory: "data"
 ```
+
+## Enhanced Features (Part Two Expansion)
+
+### Event-Aware Analysis
+The bot now includes historical SkyBlock event data to provide context-aware market analysis:
+
+- **Events Database**: `data/events.json` contains 8+ major historical events including mayors, festivals, updates, and market incidents
+- **Event Features**: Auction data is enhanced with active event information (mayor, festival status, update periods)
+- **Event Impact Analysis**: Quantified effects on different item categories and market sectors
+
+### Market Baskets System
+Six key economic baskets track different market sectors:
+
+- **Dungeons Index**: HYPERION, NECRON items, Shadow Fury, etc.
+- **Farming Index**: WHEAT, farming tools, ELEPHANT_PET, etc. 
+- **Mining Index**: Gemstones, DIVAN_DRILL, ores, etc.
+- **Skill Items Index**: Experience bottles, cookies, boosters, etc.
+- **Luxury Items Index**: Dragon pets, rare items, collectibles, etc.
+- **Commodities Index**: Enchanted blocks, basic materials, etc.
+
+### Cross-Item Analysis
+Advanced comparison capabilities:
+- Price correlation analysis between items
+- Crafting arbitrage detection using item ontology
+- Relative value assessments for investment decisions
+
+### Market Intelligence
+The `/market_pulse` command provides a "SkyBlock S&P 500" style overview:
+- Weighted basket indices with 24-hour performance
+- Market sentiment classification (Bullish/Bearish/Neutral)
+- Sector rotation insights and market trend analysis
 
 ## Architecture
 

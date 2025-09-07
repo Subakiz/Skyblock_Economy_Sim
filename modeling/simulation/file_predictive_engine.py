@@ -611,6 +611,341 @@ class FileBasedPredictiveMarketEngine:
             traceback.print_exc()
             raise
     
+    def run_cross_item_analysis(self, item_a: str, item_b: str) -> Dict[str, Any]:
+        """
+        Run cross-item arbitrage analysis comparing two items.
+        """
+        try:
+            print(f"Starting cross-item analysis: {item_a} vs {item_b}")
+            
+            # Get predictions for both items
+            predictions = self.generate_ml_predictions_from_files([item_a, item_b])
+            
+            # Load features for both items
+            features_a = load_auction_features_from_file("data", [item_a])
+            features_b = load_auction_features_from_file("data", [item_b])
+            
+            analysis_result = {
+                'timestamp': datetime.now().isoformat(),
+                'item_a': item_a,
+                'item_b': item_b,
+                'predictions': predictions,
+                'comparison': self._analyze_item_comparison(item_a, item_b, predictions, features_a, features_b),
+                'arbitrage_opportunities': self._identify_arbitrage_opportunities(item_a, item_b, predictions),
+                'correlation_analysis': self._calculate_price_correlation(features_a, features_b)
+            }
+            
+            return analysis_result
+            
+        except Exception as e:
+            print(f"Cross-item analysis failed: {e}")
+            raise
+    
+    def run_event_impact_analysis(self, event_name: str) -> Dict[str, Any]:
+        """
+        Analyze the impact of a specific event on market prices.
+        """
+        try:
+            print(f"Starting event impact analysis for: {event_name}")
+            
+            # Load events data
+            with open("data/events.json", "r") as f:
+                events = json.load(f)
+            
+            if event_name not in events:
+                raise ValueError(f"Event {event_name} not found in events.json")
+            
+            event_data = events[event_name]
+            affected_items = event_data.get('affected_items', [])
+            
+            # Analyze impact on affected items
+            impact_analysis = self._analyze_event_impact(event_name, event_data, affected_items)
+            
+            return {
+                'timestamp': datetime.now().isoformat(),
+                'event_name': event_name,
+                'event_data': event_data,
+                'impact_analysis': impact_analysis
+            }
+            
+        except Exception as e:
+            print(f"Event impact analysis failed: {e}")
+            raise
+    
+    def run_market_pulse_analysis(self) -> Dict[str, Any]:
+        """
+        Generate holistic market pulse analysis across all baskets.
+        """
+        try:
+            print("Starting market pulse analysis...")
+            
+            # Load market baskets configuration
+            with open("config/market_baskets.yaml", "r") as f:
+                baskets_config = yaml.safe_load(f)
+            
+            market_baskets = baskets_config.get('market_baskets', {})
+            
+            # Calculate basket indices
+            basket_performance = {}
+            for basket_name, basket_data in market_baskets.items():
+                basket_performance[basket_name] = self._calculate_basket_index(basket_data)
+            
+            # Generate overall market sentiment
+            market_sentiment = self._generate_market_sentiment(basket_performance)
+            
+            return {
+                'timestamp': datetime.now().isoformat(),
+                'market_sentiment': market_sentiment,
+                'basket_performance': basket_performance,
+                'market_insights': self._generate_market_pulse_insights(basket_performance, market_sentiment)
+            }
+            
+        except Exception as e:
+            print(f"Market pulse analysis failed: {e}")
+            raise
+    
+    def _analyze_item_comparison(self, item_a: str, item_b: str, predictions: Dict, features_a: Optional[pd.DataFrame], features_b: Optional[pd.DataFrame]) -> Dict[str, Any]:
+        """Analyze comparison between two items."""
+        comparison = {
+            'price_comparison': 'unknown',
+            'relative_value': 'unknown',
+            'recommendation': 'insufficient_data'
+        }
+        
+        if not predictions:
+            return comparison
+        
+        pred_a = predictions.get(item_a, {})
+        pred_b = predictions.get(item_b, {})
+        
+        if pred_a and pred_b:
+            # Compare predicted prices (use 60min horizon if available)
+            price_a = pred_a.get(60) or list(pred_a.values())[0]
+            price_b = pred_b.get(60) or list(pred_b.values())[0]
+            
+            if price_a > price_b * 1.1:
+                comparison['price_comparison'] = f"{item_a} is significantly higher than {item_b}"
+                comparison['relative_value'] = f"{item_b} may be undervalued"
+            elif price_b > price_a * 1.1:
+                comparison['price_comparison'] = f"{item_b} is significantly higher than {item_a}"
+                comparison['relative_value'] = f"{item_a} may be undervalued"
+            else:
+                comparison['price_comparison'] = "Items are similarly priced"
+                comparison['relative_value'] = "Both items appear fairly valued"
+            
+            comparison['recommendation'] = "Consider the undervalued item for investment"
+        
+        return comparison
+    
+    def _identify_arbitrage_opportunities(self, item_a: str, item_b: str, predictions: Dict) -> List[Dict[str, Any]]:
+        """Identify potential arbitrage opportunities."""
+        opportunities = []
+        
+        # Check for crafting arbitrage using item ontology
+        try:
+            with open("item_ontology.json", "r") as f:
+                ontology = json.load(f)
+            
+            # Check if one item can be crafted from the other
+            if item_a in ontology and 'craft' in ontology[item_a]:
+                craft_data = ontology[item_a]['craft']
+                inputs = craft_data.get('inputs', [])
+                
+                for input_item in inputs:
+                    if input_item['item'] == item_b:
+                        # Found crafting relationship
+                        opportunities.append({
+                            'type': 'crafting_arbitrage',
+                            'description': f"Can craft {item_a} from {input_item['qty']}x {item_b}",
+                            'input_qty': input_item['qty'],
+                            'confidence': 0.8
+                        })
+            
+        except Exception as e:
+            print(f"Warning: Could not check crafting arbitrage: {e}")
+        
+        return opportunities
+    
+    def _calculate_price_correlation(self, features_a: Optional[pd.DataFrame], features_b: Optional[pd.DataFrame]) -> Dict[str, Any]:
+        """Calculate price correlation between two items."""
+        correlation_data = {
+            'correlation_coefficient': 0.0,
+            'correlation_strength': 'unknown',
+            'data_points': 0
+        }
+        
+        if features_a is None or features_b is None or len(features_a) == 0 or len(features_b) == 0:
+            return correlation_data
+        
+        try:
+            # Align timestamps and calculate correlation
+            if 'ts' in features_a.columns and 'ts' in features_b.columns:
+                # Merge on timestamp to get aligned prices
+                merged = pd.merge(features_a[['ts', 'final_price']], 
+                                features_b[['ts', 'final_price']], 
+                                on='ts', suffixes=('_a', '_b'))
+                
+                if len(merged) > 10:  # Need minimum data points
+                    correlation = merged['final_price_a'].corr(merged['final_price_b'])
+                    correlation_data['correlation_coefficient'] = float(correlation) if not pd.isna(correlation) else 0.0
+                    correlation_data['data_points'] = len(merged)
+                    
+                    # Interpret correlation strength
+                    abs_corr = abs(correlation_data['correlation_coefficient'])
+                    if abs_corr > 0.7:
+                        correlation_data['correlation_strength'] = 'strong'
+                    elif abs_corr > 0.3:
+                        correlation_data['correlation_strength'] = 'moderate'
+                    else:
+                        correlation_data['correlation_strength'] = 'weak'
+            
+        except Exception as e:
+            print(f"Warning: Could not calculate price correlation: {e}")
+        
+        return correlation_data
+    
+    def _analyze_event_impact(self, event_name: str, event_data: Dict, affected_items: List[str]) -> Dict[str, Any]:
+        """Analyze the impact of an event on affected items."""
+        impact_analysis = {
+            'summary': f"Analysis of {event_name} impact",
+            'affected_items_count': len(affected_items),
+            'estimated_impact': event_data.get('effects', {}),
+            'recommendations': []
+        }
+        
+        # Add event-specific recommendations
+        event_type = event_data.get('type', '')
+        if event_type == 'MAYOR':
+            impact_analysis['recommendations'].append(
+                f"Consider investing in items affected by {event_data.get('name', 'this mayor')}'s perks"
+            )
+        elif event_type == 'FESTIVAL':
+            impact_analysis['recommendations'].append(
+                "Seasonal items typically see increased demand during festivals"
+            )
+        elif event_type == 'UPDATE':
+            impact_analysis['recommendations'].append(
+                "Market volatility expected around update periods - exercise caution"
+            )
+        
+        return impact_analysis
+    
+    def _calculate_basket_index(self, basket_data: Dict) -> Dict[str, Any]:
+        """Calculate performance index for a market basket."""
+        items = basket_data.get('items', [])
+        weights = basket_data.get('weights', {})
+        
+        basket_performance = {
+            'name': basket_data.get('name', 'Unknown Basket'),
+            'current_index': 100.0,  # Base index
+            'change_24h': 0.0,
+            'trend': 'neutral',
+            'items_analyzed': 0
+        }
+        
+        total_weighted_change = 0.0
+        total_weight = 0.0
+        items_with_data = 0
+        
+        # Try to get recent price data for basket items
+        try:
+            for item in items:
+                weight = weights.get(item, 1.0 / len(items))  # Equal weight if not specified
+                
+                # Load recent features for this item
+                features = load_auction_features_from_file("data", [item])
+                if features is not None and len(features) > 0:
+                    # Calculate rough 24h change (simplified)
+                    recent_prices = features['final_price'].tail(10)
+                    if len(recent_prices) >= 2:
+                        price_change = (recent_prices.iloc[-1] - recent_prices.iloc[0]) / recent_prices.iloc[0]
+                        total_weighted_change += price_change * weight
+                        total_weight += weight
+                        items_with_data += 1
+            
+            if total_weight > 0:
+                avg_change = total_weighted_change / total_weight
+                basket_performance['change_24h'] = avg_change * 100  # Convert to percentage
+                basket_performance['items_analyzed'] = items_with_data
+                
+                # Determine trend
+                if avg_change > 0.05:
+                    basket_performance['trend'] = 'bullish'
+                elif avg_change < -0.05:
+                    basket_performance['trend'] = 'bearish'
+                else:
+                    basket_performance['trend'] = 'neutral'
+        
+        except Exception as e:
+            print(f"Warning: Could not calculate basket index: {e}")
+        
+        return basket_performance
+    
+    def _generate_market_sentiment(self, basket_performance: Dict) -> Dict[str, Any]:
+        """Generate overall market sentiment from basket performance."""
+        total_change = 0.0
+        basket_count = 0
+        positive_baskets = 0
+        
+        for basket_name, performance in basket_performance.items():
+            change = performance.get('change_24h', 0.0)
+            total_change += change
+            basket_count += 1
+            
+            if change > 2.0:  # More than 2% positive
+                positive_baskets += 1
+        
+        avg_change = total_change / basket_count if basket_count > 0 else 0.0
+        positive_ratio = positive_baskets / basket_count if basket_count > 0 else 0.0
+        
+        # Determine overall sentiment
+        if avg_change > 3.0 and positive_ratio > 0.6:
+            sentiment = "Bullish"
+            emoji = "🐂"
+        elif avg_change < -3.0 and positive_ratio < 0.4:
+            sentiment = "Bearish"
+            emoji = "🐻"
+        else:
+            sentiment = "Neutral"
+            emoji = "⚖️"
+        
+        return {
+            'sentiment': sentiment,
+            'emoji': emoji,
+            'average_change': avg_change,
+            'positive_sectors': positive_baskets,
+            'total_sectors': basket_count
+        }
+    
+    def _generate_market_pulse_insights(self, basket_performance: Dict, market_sentiment: Dict) -> List[str]:
+        """Generate market insights from basket performance and sentiment."""
+        insights = []
+        
+        # Find best and worst performing baskets
+        best_basket = max(basket_performance.items(), 
+                         key=lambda x: x[1].get('change_24h', 0), default=(None, None))
+        worst_basket = min(basket_performance.items(), 
+                          key=lambda x: x[1].get('change_24h', 0), default=(None, None))
+        
+        if best_basket[0]:
+            insights.append(f"Top performer: {best_basket[1].get('name', best_basket[0])} "
+                           f"({best_basket[1].get('change_24h', 0):.1f}%)")
+        
+        if worst_basket[0]:
+            insights.append(f"Underperformer: {worst_basket[1].get('name', worst_basket[0])} "
+                           f"({worst_basket[1].get('change_24h', 0):.1f}%)")
+        
+        # Add sentiment-based insights
+        sentiment = market_sentiment.get('sentiment', 'Neutral')
+        if sentiment == 'Bullish':
+            insights.append("Market shows strong positive momentum across sectors")
+        elif sentiment == 'Bearish':
+            insights.append("Market faces headwinds with multiple sectors declining")
+        else:
+            insights.append("Market shows mixed signals with balanced sector performance")
+        
+        return insights
+    
     def save_analysis(self, results: Dict[str, Any], filepath: str):
         """Save analysis results to file."""
         

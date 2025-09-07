@@ -18,6 +18,107 @@ import re
 from storage.ndjson_storage import get_storage_instance
 
 
+def load_events() -> Dict[str, Any]:
+    """Load events data from events.json."""
+    try:
+        events_path = Path("data/events.json")
+        if not events_path.exists():
+            return {}
+        
+        with open(events_path, "r") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Warning: Failed to load events.json: {e}")
+        return {}
+
+
+def get_active_events_for_timestamp(timestamp: pd.Timestamp, events: Dict[str, Any]) -> Dict[str, Any]:
+    """Get active events for a given timestamp."""
+    active_events = {}
+    
+    if pd.isna(timestamp):
+        return active_events
+    
+    for event_id, event_data in events.items():
+        try:
+            start_date = pd.to_datetime(event_data['start_date'])
+            end_date = pd.to_datetime(event_data['end_date'])
+            
+            if start_date <= timestamp <= end_date:
+                active_events[event_id] = event_data
+        except Exception as e:
+            continue  # Skip malformed events
+    
+    return active_events
+
+
+def calculate_event_features(df: pd.DataFrame, events: Dict[str, Any]) -> pd.DataFrame:
+    """Add event-aware features to auction data."""
+    features_df = df.copy()
+    
+    # Initialize event feature columns
+    features_df['active_mayor'] = 'NONE'
+    features_df['is_festival_active'] = False
+    features_df['is_update_period'] = False
+    features_df['event_count'] = 0
+    features_df['item_affected_by_event'] = False
+    features_df['event_impact_multiplier'] = 1.0
+    
+    # Apply event features for each row
+    for idx, row in features_df.iterrows():
+        timestamp = row.get('ts') or row.get('timestamp') or row.get('end_time') or row.get('start_time')
+        if pd.isna(timestamp):
+            continue
+            
+        active_events = get_active_events_for_timestamp(pd.to_datetime(timestamp), events)
+        
+        # Set event features
+        features_df.loc[idx, 'event_count'] = len(active_events)
+        
+        impact_multiplier = 1.0
+        item_affected = False
+        
+        for event_id, event_data in active_events.items():
+            event_type = event_data.get('type', '')
+            
+            # Set mayor
+            if event_type == 'MAYOR':
+                features_df.loc[idx, 'active_mayor'] = event_data.get('name', 'UNKNOWN')
+            
+            # Set festival flag
+            if event_type == 'FESTIVAL':
+                features_df.loc[idx, 'is_festival_active'] = True
+            
+            # Set update period flag
+            if event_type == 'UPDATE':
+                features_df.loc[idx, 'is_update_period'] = True
+            
+            # Check if item is affected by this event
+            item_id = row.get('item_id', '')
+            affected_items = event_data.get('affected_items', [])
+            
+            if item_id in affected_items:
+                item_affected = True
+                # Apply impact multiplier from event
+                effects = event_data.get('effects', {})
+                impact_category = event_data.get('impact_category', '')
+                
+                # Apply category-specific effects
+                if 'general_market' in effects:
+                    impact_multiplier *= (1 + effects['general_market'])
+                
+                # Apply item-specific effects based on category
+                for effect_key, effect_value in effects.items():
+                    if effect_key in ['skill_items', 'dungeon_weapons', 'farming_tools', 'mining_items']:
+                        if any(keyword in item_id.lower() for keyword in effect_key.split('_')):
+                            impact_multiplier *= (1 + effect_value)
+        
+        features_df.loc[idx, 'item_affected_by_event'] = item_affected
+        features_df.loc[idx, 'event_impact_multiplier'] = impact_multiplier
+    
+    return features_df
+
+
 def load_config() -> Dict[str, Any]:
     """Load configuration."""
     with open("config/config.yaml", "r") as f:
@@ -264,6 +365,11 @@ def calculate_auction_features(df: pd.DataFrame) -> pd.DataFrame:
         # Fallback if no item_name grouping possible
         features_df['rolling_avg_price_24h'] = features_df['final_price']
         features_df['rolling_avg_price_7d'] = features_df['final_price']
+    
+    # Add event-aware features
+    events = load_events()
+    if events:
+        features_df = calculate_event_features(features_df, events)
     
     return features_df
 

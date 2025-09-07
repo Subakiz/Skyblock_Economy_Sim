@@ -1,0 +1,114 @@
+market_baskets:
+  # Key economic baskets for market pulse analysis
+  
+  dungeon_basket:
+    name: "Dungeons Index"
+    description: "High-tier dungeon items and weapons"
+    items:
+      - "HYPERION"
+      - "NECRON_CHESTPLATE" 
+      - "NECRON_LEGGINGS"
+      - "NECRON_BOOTS"
+      - "NECRON_HELMET"
+      - "SHADOW_FURY"
+      - "WITHER_HELMET"
+      - "GIANT_SWORD"
+    weights:
+      "HYPERION": 0.3
+      "NECRON_CHESTPLATE": 0.2
+      "NECRON_LEGGINGS": 0.15
+      "NECRON_BOOTS": 0.1
+      "NECRON_HELMET": 0.1
+      "SHADOW_FURY": 0.1
+      "WITHER_HELMET": 0.03
+      "GIANT_SWORD": 0.02
+
+  farming_basket:
+    name: "Farming Index"
+    description: "Farming tools, crops, and related items"
+    items:
+      - "WHEAT"
+      - "CARROT"
+      - "POTATO"
+      - "MATHEMATICAL_HOE_BLUEPRINT"
+      - "ELEPHANT_PET"
+      - "ENCHANTED_HAY_BLOCK"
+      - "ENCHANTED_CARROT"
+      - "ENCHANTED_POTATO"
+    weights:
+      "WHEAT": 0.15
+      "CARROT": 0.15
+      "POTATO": 0.15
+      "MATHEMATICAL_HOE_BLUEPRINT": 0.25
+      "ELEPHANT_PET": 0.2
+      "ENCHANTED_HAY_BLOCK": 0.03
+      "ENCHANTED_CARROT": 0.04
+      "ENCHANTED_POTATO": 0.03
+
+  mining_basket:
+    name: "Mining Index" 
+    description: "Mining equipment, ores, and gemstones"
+    items:
+      - "ENCHANTED_DIAMOND"
+      - "RUBY"
+      - "SAPPHIRE"
+      - "MITHRIL_ORE"
+      - "TITANIUM_ORE"
+      - "DIVAN_DRILL"
+      - "GEMSTONE_GAUNTLET"
+    weights:
+      "ENCHANTED_DIAMOND": 0.2
+      "RUBY": 0.15
+      "SAPPHIRE": 0.15
+      "MITHRIL_ORE": 0.1
+      "TITANIUM_ORE": 0.1
+      "DIVAN_DRILL": 0.2
+      "GEMSTONE_GAUNTLET": 0.1
+
+  skill_basket:
+    name: "Skill Items Index"
+    description: "Experience bottles, skill boosters, and training items"
+    items:
+      - "GRAND_EXPERIENCE_BOTTLE"
+      - "ENCHANTED_COOKIE"
+      - "JERRY_CANDY"
+      - "BOOSTER_COOKIE"
+      - "EXP_BOTTLE"
+    weights:
+      "GRAND_EXPERIENCE_BOTTLE": 0.3
+      "ENCHANTED_COOKIE": 0.25
+      "JERRY_CANDY": 0.2
+      "BOOSTER_COOKIE": 0.15
+      "EXP_BOTTLE": 0.1
+
+  luxury_basket:
+    name: "Luxury Items Index"
+    description: "High-value collectibles, pets, and rare items"
+    items:
+      - "DRAGON_PET"
+      - "PHOENIX_PET"
+      - "FROZEN_STEVE_PET"
+      - "ASPECT_OF_THE_DRAGONS"
+      - "REAPER_SCYTHE"
+    weights:
+      "DRAGON_PET": 0.3
+      "PHOENIX_PET": 0.25
+      "FROZEN_STEVE_PET": 0.2
+      "ASPECT_OF_THE_DRAGONS": 0.15
+      "REAPER_SCYTHE": 0.1
+
+  commodity_basket:
+    name: "Commodities Index"
+    description: "Basic materials and commonly traded items"
+    items:
+      - "ENCHANTED_LAPIS_LAZULI"
+      - "ENCHANTED_LAPIS_BLOCK"
+      - "ENCHANTED_REDSTONE_BLOCK"
+      - "ENCHANTED_GOLD_BLOCK"
+      - "ENCHANTED_IRON_BLOCK"
+    weights:
+      "ENCHANTED_LAPIS_LAZULI": 0.2
+      "ENCHANTED_LAPIS_BLOCK": 0.3
+      "ENCHANTED_REDSTONE_BLOCK": 0.2
+      "ENCHANTED_GOLD_BLOCK": 0.2
+      "ENCHANTED_IRON_BLOCK": 0.1

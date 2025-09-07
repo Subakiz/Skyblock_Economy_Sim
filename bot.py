@@ -10,7 +10,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 import discord
 from discord import app_commands
@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from io import BytesIO
 import numpy as np
+import json
 
 # Add project root to path
 project_root = Path(__file__).parent
@@ -43,6 +44,27 @@ except ImportError as e:
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+async def event_autocomplete(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
+    """Autocomplete function for event names."""
+    try:
+        events_path = Path("data/events.json")
+        if not events_path.exists():
+            return []
+        
+        with open(events_path, "r") as f:
+            events = json.load(f)
+        
+        # Filter events based on current input
+        choices = []
+        for event_id, event_data in events.items():
+            event_name = event_data.get('name', event_id)
+            if current.lower() in event_id.lower() or current.lower() in event_name.lower():
+                choices.append(app_commands.Choice(name=event_name, value=event_id))
+        
+        return choices[:25]  # Discord limit
+    except Exception:
+        return []
 
 def load_config() -> Dict[str, Any]:
     """Load configuration from config.yaml."""
@@ -424,6 +446,308 @@ async def predict_command(interaction: discord.Interaction, item_name: str, time
         logger.error(f"Predict command failed: {e}")
         await interaction.followup.send(f"❌ Prediction failed: {str(e)}")
 
+@bot.tree.command(name="compare", description="Compare two items for arbitrage opportunities")
+@app_commands.describe(
+    item_a="First item to compare (e.g., HYPERION)",
+    item_b="Second item to compare (e.g., NECRON_CHESTPLATE)"
+)
+async def compare_command(interaction: discord.Interaction, item_a: str, item_b: str):
+    """Compare two items for cross-item arbitrage analysis."""
+    await interaction.response.defer()
+    
+    if not IMPORTS_SUCCESS:
+        await interaction.followup.send("❌ Analysis features are not available.")
+        return
+    
+    try:
+        # Sanitize inputs
+        item_a = item_a.upper().strip()
+        item_b = item_b.upper().strip()
+        
+        # Basic validation
+        for item in [item_a, item_b]:
+            if not item or len(item) > 50:
+                await interaction.followup.send("❌ Please provide valid item names (max 50 characters each)")
+                return
+            if not item.replace('_', '').replace('-', '').isalnum():
+                await interaction.followup.send("❌ Item names can only contain letters, numbers, underscores, and hyphens")
+                return
+        
+        if item_a == item_b:
+            await interaction.followup.send("❌ Please provide two different items to compare")
+            return
+        
+        logger.info(f"Running comparison analysis: {item_a} vs {item_b}")
+        
+        # Run cross-item analysis
+        engine = FileBasedPredictiveMarketEngine()
+        results = await asyncio.to_thread(engine.run_cross_item_analysis, item_a, item_b)
+        
+        # Create response embed
+        embed = discord.Embed(
+            title=f"⚖️ Comparison: {item_a} vs {item_b}",
+            color=discord.Color.gold(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        
+        # Add price predictions
+        predictions = results.get('predictions', {})
+        if predictions:
+            pred_text = ""
+            if item_a in predictions:
+                pred_a = predictions[item_a]
+                if pred_a:
+                    best_pred_a = list(pred_a.values())[0]
+                    pred_text += f"**{item_a}:** {best_pred_a:,.0f} coins\n"
+            
+            if item_b in predictions:
+                pred_b = predictions[item_b]
+                if pred_b:
+                    best_pred_b = list(pred_b.values())[0]
+                    pred_text += f"**{item_b}:** {best_pred_b:,.0f} coins\n"
+            
+            if pred_text:
+                embed.add_field(
+                    name="📈 Price Predictions",
+                    value=pred_text,
+                    inline=False
+                )
+        
+        # Add comparison analysis
+        comparison = results.get('comparison', {})
+        if comparison:
+            comp_text = f"**Analysis:** {comparison.get('price_comparison', 'Unknown')}\n"
+            comp_text += f"**Relative Value:** {comparison.get('relative_value', 'Unknown')}\n"
+            comp_text += f"**Recommendation:** {comparison.get('recommendation', 'Unknown')}"
+            
+            embed.add_field(
+                name="🔍 Comparison Analysis",
+                value=comp_text,
+                inline=False
+            )
+        
+        # Add arbitrage opportunities
+        opportunities = results.get('arbitrage_opportunities', [])
+        if opportunities:
+            opp_text = ""
+            for opp in opportunities[:3]:  # Show top 3
+                opp_text += f"• {opp.get('description', 'Unknown opportunity')}\n"
+            
+            embed.add_field(
+                name="💰 Arbitrage Opportunities",
+                value=opp_text,
+                inline=False
+            )
+        
+        # Add correlation info
+        correlation = results.get('correlation_analysis', {})
+        if correlation.get('data_points', 0) > 0:
+            corr_coef = correlation.get('correlation_coefficient', 0)
+            strength = correlation.get('correlation_strength', 'unknown')
+            data_points = correlation.get('data_points', 0)
+            
+            embed.add_field(
+                name="📊 Price Correlation",
+                value=f"**Coefficient:** {corr_coef:.3f}\n**Strength:** {strength.title()}\n**Data Points:** {data_points:,}",
+                inline=True
+            )
+        
+        embed.set_footer(text="Cross-item analysis completed")
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        logger.error(f"Compare command failed: {e}")
+        await interaction.followup.send(f"❌ Comparison analysis failed: {str(e)}")
+
+@bot.tree.command(name="event_impact", description="Analyze impact of a historical SkyBlock event")
+@app_commands.describe(event_name="Name of the event to analyze")
+@app_commands.autocomplete(event_name=event_autocomplete)
+async def event_impact_command(interaction: discord.Interaction, event_name: str):
+    """Analyze the impact of a specific historical event."""
+    await interaction.response.defer()
+    
+    if not IMPORTS_SUCCESS:
+        await interaction.followup.send("❌ Analysis features are not available.")
+        return
+    
+    try:
+        # Load events to validate input
+        events_path = Path("data/events.json")
+        if not events_path.exists():
+            await interaction.followup.send("❌ Events database not found.")
+            return
+        
+        with open(events_path, "r") as f:
+            events = json.load(f)
+        
+        # Find matching event (case-insensitive)
+        matching_event = None
+        for event_id in events.keys():
+            if event_id.lower() == event_name.lower():
+                matching_event = event_id
+                break
+            elif event_name.upper() in event_id.upper():
+                matching_event = event_id
+                break
+        
+        if not matching_event:
+            available_events = ", ".join(list(events.keys())[:5])  # Show first 5
+            await interaction.followup.send(f"❌ Event '{event_name}' not found. Available events: {available_events}...")
+            return
+        
+        logger.info(f"Running event impact analysis for: {matching_event}")
+        
+        # Run event impact analysis
+        engine = FileBasedPredictiveMarketEngine()
+        results = await asyncio.to_thread(engine.run_event_impact_analysis, matching_event)
+        
+        event_data = results.get('event_data', {})
+        impact_analysis = results.get('impact_analysis', {})
+        
+        # Create response embed
+        embed = discord.Embed(
+            title=f"📅 Event Impact: {event_data.get('name', matching_event)}",
+            description=event_data.get('description', 'No description available'),
+            color=discord.Color.purple(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        
+        # Add event details
+        event_type = event_data.get('type', 'Unknown')
+        start_date = event_data.get('start_date', 'Unknown')
+        end_date = event_data.get('end_date', 'Unknown')
+        
+        embed.add_field(
+            name="📋 Event Details",
+            value=f"**Type:** {event_type}\n**Start:** {start_date[:10]}\n**End:** {end_date[:10]}",
+            inline=True
+        )
+        
+        # Add impact effects
+        effects = event_data.get('effects', {})
+        if effects:
+            effects_text = ""
+            for category, impact in effects.items():
+                sign = "+" if impact > 0 else ""
+                effects_text += f"**{category.replace('_', ' ').title()}:** {sign}{impact*100:.1f}%\n"
+            
+            embed.add_field(
+                name="📊 Market Effects",
+                value=effects_text,
+                inline=True
+            )
+        
+        # Add affected items
+        affected_items = event_data.get('affected_items', [])
+        if affected_items:
+            items_text = ", ".join(affected_items[:5])  # Show first 5
+            if len(affected_items) > 5:
+                items_text += f" +{len(affected_items) - 5} more"
+            
+            embed.add_field(
+                name="🎯 Affected Items",
+                value=items_text,
+                inline=False
+            )
+        
+        # Add recommendations
+        recommendations = impact_analysis.get('recommendations', [])
+        if recommendations:
+            rec_text = "\n".join([f"• {rec}" for rec in recommendations[:3]])
+            embed.add_field(
+                name="💡 Recommendations",
+                value=rec_text,
+                inline=False
+            )
+        
+        embed.set_footer(text="Event impact analysis completed")
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        logger.error(f"Event impact command failed: {e}")
+        await interaction.followup.send(f"❌ Event impact analysis failed: {str(e)}")
+
+@bot.tree.command(name="market_pulse", description="Get holistic SkyBlock market overview and sentiment")
+async def market_pulse_command(interaction: discord.Interaction):
+    """Generate holistic market pulse analysis."""
+    await interaction.response.defer()
+    
+    if not IMPORTS_SUCCESS:
+        await interaction.followup.send("❌ Analysis features are not available.")
+        return
+    
+    try:
+        logger.info("Running market pulse analysis")
+        
+        # Run market pulse analysis
+        engine = FileBasedPredictiveMarketEngine()
+        results = await asyncio.to_thread(engine.run_market_pulse_analysis)
+        
+        market_sentiment = results.get('market_sentiment', {})
+        basket_performance = results.get('basket_performance', {})
+        market_insights = results.get('market_insights', [])
+        
+        # Create response embed
+        sentiment_emoji = market_sentiment.get('emoji', '⚖️')
+        sentiment_name = market_sentiment.get('sentiment', 'Neutral')
+        
+        embed = discord.Embed(
+            title=f"🌡️ SkyBlock Market Pulse",
+            description=f"Overall Market Sentiment: **{sentiment_name}** {sentiment_emoji}",
+            color=discord.Color.green() if sentiment_name == 'Bullish' else 
+                  discord.Color.red() if sentiment_name == 'Bearish' else discord.Color.light_grey(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        
+        # Add sector performance
+        if basket_performance:
+            sector_text = ""
+            sorted_baskets = sorted(basket_performance.items(), 
+                                  key=lambda x: x[1].get('change_24h', 0), reverse=True)
+            
+            for basket_name, performance in sorted_baskets[:6]:  # Show top 6
+                name = performance.get('name', basket_name.replace('_', ' ').title())
+                change = performance.get('change_24h', 0)
+                trend_emoji = "▲" if change > 0 else "▼" if change < 0 else "➡️"
+                
+                sector_text += f"• **{name}:** {trend_emoji} {change:+.1f}%\n"
+            
+            embed.add_field(
+                name="📈 Sector Performance (24h)",
+                value=sector_text or "No data available",
+                inline=False
+            )
+        
+        # Add market insights
+        if market_insights:
+            insights_text = "\n".join([f"• {insight}" for insight in market_insights[:4]])
+            embed.add_field(
+                name="🔍 Market Insights",
+                value=insights_text,
+                inline=False
+            )
+        
+        # Add summary stats
+        avg_change = market_sentiment.get('average_change', 0)
+        positive_sectors = market_sentiment.get('positive_sectors', 0)
+        total_sectors = market_sentiment.get('total_sectors', 0)
+        
+        embed.add_field(
+            name="📊 Market Summary",
+            value=f"**Average Change:** {avg_change:+.1f}%\n**Positive Sectors:** {positive_sectors}/{total_sectors}",
+            inline=True
+        )
+        
+        embed.set_footer(text="Market pulse analysis • Data may be limited without active trading data")
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        logger.error(f"Market pulse command failed: {e}")
+        await interaction.followup.send(f"❌ Market pulse analysis failed: {str(e)}")
+
 @bot.tree.command(name="help", description="Show bot help and command information")
 async def help_command(interaction: discord.Interaction):
     """Help command to show available commands and usage."""
@@ -452,14 +776,20 @@ async def help_command(interaction: discord.Interaction):
     )
     
     embed.add_field(
-        name="🔄 `/retrain <item_name>`",
-        value="[Admin] Manually retrain model for an item",
+        name="⚖️ `/compare <item_a> <item_b>`",
+        value="Compare two items for arbitrage opportunities\n*Example: `/compare HYPERION NECRON_CHESTPLATE`*",
         inline=False
     )
     
     embed.add_field(
-        name="📊 `/plot <item_name>`",
-        value="Generate price history chart for an item\n*Example: `/plot WHEAT`*",
+        name="📅 `/event_impact <event_name>`",
+        value="Analyze impact of historical SkyBlock events\n*Example: `/event_impact MAYOR_DERPY`*",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🌡️ `/market_pulse`",
+        value="Get holistic market overview and sentiment analysis",
         inline=False
     )
     

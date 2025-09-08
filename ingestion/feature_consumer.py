@@ -42,10 +42,12 @@ class FeatureConsumer:
         self.min_auction_count = market_config.get("min_auction_count", 25)
         self.max_watchlist_items = market_config.get("max_watchlist_items", 2000)
         
-        # Data paths
-        self.feature_summaries_path = Path("data/feature_summaries")
+        # Data paths - configurable with fallback
+        summaries_path = market_config.get("feature_summaries_path", "data/feature_summaries")
+        self.feature_summaries_path = Path(summaries_path)
+        self.feature_summaries_path.mkdir(parents=True, exist_ok=True)
         
-        self.logger.info(f"FeatureConsumer initialized with window={self.window_hours}h")
+        self.logger.info(f"FeatureConsumer initialized with window={self.window_hours}h, path={self.feature_summaries_path}")
     
     def _load_recent_summaries(self, window_hours: Optional[int] = None) -> pd.DataFrame:
         """Load feature summaries from the last N hours."""
@@ -54,7 +56,7 @@ class FeatureConsumer:
                 window_hours = self.window_hours
             
             if not self.feature_summaries_path.exists():
-                self.logger.debug("Feature summaries directory does not exist")
+                self.logger.warning(f"Feature summaries directory does not exist: {self.feature_summaries_path}")
                 return pd.DataFrame()
             
             # Calculate time window
@@ -65,17 +67,22 @@ class FeatureConsumer:
             try:
                 dataset = ds.dataset(self.feature_summaries_path, format="parquet")
                 
-                # Filter by hour_start timestamp
-                filter_expr = (
-                    (ds.field("hour_start") >= start_time) &
-                    (ds.field("hour_start") <= end_time)
-                )
-                
-                table = dataset.to_table(filter=filter_expr)
-                df = table.to_pandas()
-                
-                self.logger.debug(f"Loaded {len(df)} summary records from last {window_hours}h")
-                return df
+                # Try to filter by hour_start column if present
+                try:
+                    filter_expr = (
+                        (ds.field("hour_start") >= start_time) &
+                        (ds.field("hour_start") <= end_time)
+                    )
+                    table = dataset.to_table(filter=filter_expr)
+                    df = table.to_pandas()
+                    
+                    self.logger.info(f"Loaded {len(df)} summary records from {self.feature_summaries_path} using hour_start filter")
+                    return df
+                    
+                except Exception as filter_e:
+                    self.logger.debug(f"hour_start filter failed, falling back to partition scanning: {filter_e}")
+                    # Fallback: manual directory scanning
+                    return self._load_summaries_fallback(start_time, end_time)
                 
             except Exception as e:
                 self.logger.error(f"Failed to load summaries with PyArrow: {e}")
@@ -113,7 +120,9 @@ class FeatureConsumer:
                                     self.logger.error(f"Failed to parse time from {hour_dir}: {e}")
             
             # Load and concatenate files
+            self.logger.info(f"Found {len(summary_files)} summary files in {self.feature_summaries_path}")
             if not summary_files:
+                self.logger.warning(f"No recent summaries found in {self.feature_summaries_path} for time window {start_time} to {end_time}")
                 return pd.DataFrame()
             
             dfs = []
@@ -126,7 +135,7 @@ class FeatureConsumer:
             
             if dfs:
                 result = pd.concat(dfs, ignore_index=True)
-                self.logger.debug(f"Fallback loaded {len(result)} records from {len(dfs)} files")
+                self.logger.info(f"Fallback loaded {len(result)} records from {len(dfs)} files")
                 return result
             else:
                 return pd.DataFrame()
@@ -219,14 +228,15 @@ class FeatureConsumer:
             df = self._load_recent_summaries(window_hours)
             
             if df.empty:
-                self.logger.warning("No recent summaries found")
+                self.logger.warning(f"No recent summaries found in {self.feature_summaries_path}")
                 return {
                     "watchlist": set(),
                     "fmv_data": {},
                     "metadata": {
                         "hours_analyzed": window_hours or self.window_hours,
                         "items_analyzed": 0,
-                        "watchlist_size": 0
+                        "watchlist_size": 0,
+                        "resolved_path": str(self.feature_summaries_path)
                     }
                 }
             
@@ -290,11 +300,12 @@ class FeatureConsumer:
                 "items_analyzed": len(item_groups),
                 "watchlist_size": len(watchlist),
                 "fmv_items": len(fmv_data),
-                "generated_at": datetime.now(timezone.utc).isoformat()
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "resolved_path": str(self.feature_summaries_path)
             }
             
             self.logger.info(f"Market intelligence generated: {len(watchlist)} watchlist items, "
-                           f"FMV data for {len(fmv_data)} items")
+                           f"FMV data for {len(fmv_data)} items from {self.feature_summaries_path}")
             
             return {
                 "watchlist": watchlist,

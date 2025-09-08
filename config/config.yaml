@@ -85,6 +85,8 @@ auction_sniper:
 market:
   # Time window for market analysis (hours)
   window_hours: 12
+  # Path for feature summaries storage
+  feature_summaries_path: data/feature_summaries
   # Number of lowest prices to track per item
   lowest_ladder_size: 16
   # Threshold for considering a price level "thin" (triggers FMV adjustment)

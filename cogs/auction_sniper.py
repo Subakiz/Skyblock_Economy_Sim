@@ -22,10 +22,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 import aiofiles
+import psutil
 
 # Import project modules
 from ingestion.common.hypixel_client import HypixelClient
 from ingestion.item_processing import create_canonical_name
+from ingestion.feature_consumer import FeatureConsumer
 
 
 class AuctionSniper(commands.Cog):
@@ -64,10 +66,26 @@ class AuctionSniper(commands.Cog):
         self.auction_watchlist: Set[str] = set()  # Items worth sniping
         self.fmv_data: Dict[str, Dict[str, float]] = {}  # Fair Market Value cache
         self.recent_alerts: Dict[str, datetime] = {}  # Cooldown tracking for alerts
+        self.recent_auction_uuids: Set[str] = set()  # UUID-based deduplication
+        self.uuid_cooldown_minutes = 30  # How long to remember auction UUIDs
         self.alert_channel_id: Optional[int] = None
         self.profit_threshold: float = sniper_config.get("profit_threshold", 100000)
         self.min_auction_count: int = sniper_config.get("min_auction_count", 50)
         self.alert_cooldown_minutes: int = sniper_config.get("alert_cooldown_minutes", 10)  # Default 10 minute cooldown
+        
+        # Feature consumer for market intelligence
+        self.feature_consumer = FeatureConsumer(self.config)
+        
+        # Memory and performance guards
+        guards_config = self.config.get("guards", {})
+        self.soft_rss_mb = guards_config.get("soft_rss_mb", 1300)
+        self.hard_rss_mb = guards_config.get("hard_rss_mb", 1500)
+        
+        # Market intelligence configuration
+        market_config = self.config.get("market", {})
+        self.window_hours = market_config.get("window_hours", 12)
+        self.intel_interval = market_config.get("intel_interval_seconds", 90)
+        self.rows_soft_cap = market_config.get("rows_soft_cap", 300000)
         
         # Data directories
         self.data_dir = Path("data/sniper")
@@ -90,7 +108,25 @@ class AuctionSniper(commands.Cog):
         self.hunter_task_active = False
         self.analyst_task_active = False
         
-        self.logger.info("Auction Sniper initialized")
+        self.logger.info(f"Enhanced AuctionSniper initialized with memory guards: soft={self.soft_rss_mb}MB")
+        
+        # Set up task intervals dynamically
+        self.update_market_intelligence.change_interval(seconds=self.intel_interval)
+    
+    def _check_memory_guard(self) -> bool:
+        """Check if we should skip processing due to memory pressure."""
+        try:
+            process = psutil.Process()
+            rss_mb = process.memory_info().rss / (1024 * 1024)
+            
+            if rss_mb > self.soft_rss_mb:
+                self.logger.warning(f"Memory guard triggered: RSS {rss_mb:.1f}MB > {self.soft_rss_mb}MB, skipping cycle")
+                return False
+                
+            return True
+        except Exception as e:
+            self.logger.error(f"Memory guard check failed: {e}")
+            return True  # Continue on error
     
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration from bot's config."""
@@ -246,63 +282,45 @@ class AuctionSniper(commands.Cog):
         except Exception as e:
             self.logger.error(f"Hunter task error: {e}")
     
-    @tasks.loop(seconds=60)  # Updated to 60 seconds as requested
+    @tasks.loop()  # Dynamic interval set in setup
     async def update_market_intelligence(self):
         """
-        Market Intelligence Task: Memory-efficient market analysis from Parquet data.
-        Uses time-windowed loading (2-hour window) to prevent OOM kills.
-        Updates watchlist and FMV data every 60 seconds by reading only recent data.
+        Market Intelligence Task: Generate market intelligence from feature summaries.
+        Uses feature consumer to read compact summaries instead of raw data.
+        Memory-efficient with guards and dynamic window scaling.
         """
+        if not self._check_memory_guard():
+            return
+        
         try:
             start_time = time.time()
-            self.logger.info("Starting memory-efficient market intelligence update from Parquet data...")
+            self.logger.info("Starting feature-based market intelligence update...")
             
-            # Check if Parquet data exists
-            if not self.PARQUET_DATA_PATH.exists() or not any(self.PARQUET_DATA_PATH.iterdir()):
-                self.logger.debug("No Parquet auction data found - waiting for ingestion service")
+            # Run market intelligence generation in background thread
+            intelligence = await asyncio.to_thread(
+                self.feature_consumer.generate_market_intelligence,
+                self.window_hours
+            )
+            
+            if not intelligence:
+                self.logger.warning("No market intelligence generated")
                 return
             
-            # Memory-efficient loading: Only load last 2 hours of data
-            try:
-                # Calculate 2-hour time window
-                two_hours_ago = datetime.now(timezone.utc) - timedelta(hours=2)
-                
-                # Use modern dataset API for efficient filtering
-                import pyarrow.dataset as ds
-                dataset = ds.dataset(self.PARQUET_DATA_PATH, format="parquet")
-                
-                # Create filter for recent data only
-                filter_expr = ds.field('scan_timestamp') > two_hours_ago
-                
-                # Read filtered data - only loads necessary blocks from disk  
-                table = dataset.to_table(filter=filter_expr)
-                df = table.to_pandas()
-                
-                if df.empty:
-                    self.logger.debug("No recent data in 2-hour window - waiting for new data")
-                    return
-                
-                self.logger.info(f"Memory-efficiently loaded {len(df)} recent auction records "
-                               f"(2-hour window from {two_hours_ago.strftime('%H:%M:%S')})")
-                
-                # Convert to list of dictionaries to maintain compatibility with existing methods
-                auction_records = df.to_dict('records')
-                
-                # Update watchlist based on item volume in Parquet data
-                await self._update_watchlist_from_parquet(auction_records)
-                
-                # Update FMV data from Parquet using time-windowed data
-                self.update_market_values_from_parquet_windowed(df)
-                
-                # Persist updated data
-                await self._save_persisted_data()
-                
-                processing_time = time.time() - start_time
-                self.logger.info(f"Market intelligence updated: {len(self.auction_watchlist)} watchlist items, "
-                               f"FMV data for {len(self.fmv_data)} items in {processing_time:.1f}s")
-                
-            except Exception as e:
-                self.logger.error(f"Error reading Parquet data: {e}")
+            # Update internal state
+            self.auction_watchlist = intelligence.get("watchlist", set())
+            self.fmv_data = intelligence.get("fmv_data", {})
+            
+            # Save updated data
+            await self._save_persisted_data()
+            
+            # Log results
+            metadata = intelligence.get("metadata", {})
+            processing_time = time.time() - start_time
+            
+            self.logger.info(f"Market intelligence updated: {len(self.auction_watchlist)} watchlist items, "
+                           f"FMV data for {len(self.fmv_data)} items "
+                           f"(analyzed {metadata.get('items_analyzed', 0)} items from {metadata.get('hours_analyzed', 0)}h window) "
+                           f"in {processing_time:.1f}s")
         
         except Exception as e:
             self.logger.error(f"Market intelligence task error: {e}")
@@ -813,49 +831,71 @@ class AuctionSniper(commands.Cog):
             return True  # Default to accepting if check fails
     
     async def _alert_snipe(self, auction: Dict[str, Any]):
-        """Send snipe alert to configured Discord channel with seller-aware cooldown."""
+        """Send snipe alert to configured Discord channel with seller-aware and UUID-aware cooldown."""
         if not self.alert_channel_id:
             return
         
         try:
             item_name = auction.get("item_name", "Unknown Item")
             auctioneer = auction.get("auctioneer", "")
+            uuid = auction.get("uuid", "")
+            price = float(auction.get("starting_bid", 0))
+            current_time = datetime.now(timezone.utc)
+            
+            # Check auction UUID deduplication (avoid alerting same auction twice)
+            if uuid and uuid in self.recent_auction_uuids:
+                self.logger.debug(f"Suppressing duplicate alert: same auction UUID {uuid[:8]}...")
+                return
             
             # Create seller-aware composite key for cooldown tracking
             alert_key = f"{item_name}_{auctioneer}"
             
-            # Check cooldown - prevent duplicate alerts from same seller for same item
-            current_time = datetime.now(timezone.utc)
+            # Check seller cooldown - prevent duplicate alerts from same seller for same item
+            price_improved = False
             if alert_key in self.recent_alerts:
                 last_alert_time = self.recent_alerts[alert_key]
                 time_since_last = (current_time - last_alert_time).total_seconds() / 60  # minutes
                 
                 if time_since_last < self.alert_cooldown_minutes:
-                    self.logger.debug(f"Suppressing duplicate alert: {item_name} from seller {auctioneer[:8]}... "
-                                    f"(cooldown: {time_since_last:.1f}/{self.alert_cooldown_minutes} min)")
-                    return
+                    # Check if price has improved significantly (allow re-alert for better deals)
+                    last_price = getattr(self.recent_alerts.get(alert_key), 'price', None)
+                    if last_price and price < last_price * 0.9:  # 10% price improvement
+                        price_improved = True
+                        self.logger.info(f"Price improved alert: {item_name} from {auctioneer[:8]}... "
+                                       f"price dropped {(1 - price/last_price)*100:.1f}%")
+                    else:
+                        self.logger.debug(f"Suppressing duplicate alert: {item_name} from seller {auctioneer[:8]}... "
+                                        f"(cooldown: {time_since_last:.1f}/{self.alert_cooldown_minutes} min)")
+                        return
             
-            # Clean up expired cooldowns (older than 2x cooldown period)
+            # Clean up expired cooldowns and UUIDs
             cutoff_time = current_time - timedelta(minutes=self.alert_cooldown_minutes * 2)
             expired_keys = [key for key, timestamp in self.recent_alerts.items() if timestamp < cutoff_time]
             for key in expired_keys:
                 del self.recent_alerts[key]
+            
+            # Clean up old UUIDs (TTL-based)
+            uuid_cutoff = current_time - timedelta(minutes=self.uuid_cooldown_minutes)
+            self.recent_auction_uuids = {
+                u for u in self.recent_auction_uuids 
+                if (current_time - getattr(u, 'timestamp', current_time)).total_seconds() < self.uuid_cooldown_minutes * 60
+            }
             
             # Send the alert
             channel = self.bot.get_channel(self.alert_channel_id)
             if not channel:
                 return
             
-            price = float(auction.get("starting_bid", 0))
-            uuid = auction.get("uuid", "")
             fmv_info = self.fmv_data.get(item_name, {})
             fmv = fmv_info.get("fmv", 0)
-            estimated_profit = fmv - price - (price * 0.01)
+            floor_price = fmv_info.get("floor_price", 0)
+            method = fmv_info.get("method", "unknown")
+            estimated_profit = fmv - price - (price * 0.01)  # Account for 1% auction house fee
             
             embed = discord.Embed(
-                title="🎯 Auction Snipe Detected!",
+                title="🎯 Auction Snipe Detected!" + (" 📈 Price Improved!" if price_improved else ""),
                 description=f"**{item_name}**",
-                color=0x00ff00,
+                color=0x00ff00 if not price_improved else 0xffd700,
                 timestamp=current_time
             )
             
@@ -865,15 +905,29 @@ class AuctionSniper(commands.Cog):
             
             embed.add_field(name="🔗 View Auction", value=f"`/viewauction {uuid}`", inline=False)
             
+            # Add market depth information if available
+            if fmv_info:
+                floor_count = fmv_info.get("floor_count", 0)
+                depth_info = f"Floor: {floor_count} items @ {floor_price:,.0f} | Method: {method}"
+                embed.add_field(name="📊 Market Depth", value=depth_info, inline=False)
+            
             embed.set_footer(text="Hypixel Auction Sniper", 
                            icon_url="https://hypixel.net/favicon.ico")
             
             await channel.send(embed=embed)
             
-            # Record the alert in cooldown cache
-            self.recent_alerts[alert_key] = current_time
+            # Record the alert in cooldown cache with price for improvement tracking
+            alert_data = type('AlertData', (), {})()
+            alert_data.timestamp = current_time
+            alert_data.price = price
+            self.recent_alerts[alert_key] = alert_data
             
-            self.logger.info(f"Sent snipe alert for {item_name} from seller {auctioneer[:8]}... to channel {channel.name}")
+            # Add UUID to recent set
+            if uuid:
+                self.recent_auction_uuids.add(uuid)
+            
+            self.logger.info(f"Sent snipe alert for {item_name} from seller {auctioneer[:8]}... to channel {channel.name} "
+                           f"(price: {price:,.0f}, profit: {estimated_profit:,.0f})")
         
         except Exception as e:
             self.logger.error(f"Failed to send snipe alert: {e}")
@@ -932,35 +986,58 @@ class AuctionSniper(commands.Cog):
         await interaction.followup.send(embed=embed)
         self.logger.info(f"Sniper configuration updated: profit_threshold={self.profit_threshold}, min_auction_count={self.min_auction_count}")
     
-    @app_commands.command(name="sniper_status", description="Check sniper status and statistics")
+    @app_commands.command(name="sniper_status", description="Check sniper status and performance metrics")
     async def sniper_status(self, interaction: discord.Interaction):
-        """Show current sniper status."""
-        embed = discord.Embed(title="🎯 Auction Sniper Status", color=0x0099ff, 
-                            timestamp=datetime.now(timezone.utc))
-        
-        # Task status
-        hunter_status = "🟢 Running" if self.high_frequency_snipe_scan.is_running() else "🔴 Stopped"
-        intelligence_status = "🟢 Running" if self.update_market_intelligence.is_running() else "🔴 Stopped"
-        
-        embed.add_field(name="🏃 Hunter Task (2s)", value=hunter_status, inline=True)
-        embed.add_field(name="🧠 Intelligence Task (60s)", value=intelligence_status, inline=True)
-        embed.add_field(name="📢 Alert Channel", 
-                       value=f"<#{self.alert_channel_id}>" if self.alert_channel_id else "Not set", 
-                       inline=True)
-        
-        # Configuration
-        embed.add_field(name="💰 Profit Threshold", value=f"{self.profit_threshold:,} coins", inline=True)
-        embed.add_field(name="📊 Min Auction Count", value=str(self.min_auction_count), inline=True)
-        embed.add_field(name="📝 Watchlist Size", value=str(len(self.auction_watchlist)), inline=True)
-        
-        # FMV data status
-        embed.add_field(name="💾 FMV Cache", value=f"{len(self.fmv_data)} items", inline=True)
-        
-        # API status
-        api_status = "🟢 Connected" if self.hypixel_client else "🔴 No API Key"
-        embed.add_field(name="🔗 Hypixel API", value=api_status, inline=True)
-        
-        await interaction.response.send_message(embed=embed)
+        """Show current sniper status with performance metrics."""
+        try:
+            await interaction.response.defer()
+            
+            embed = discord.Embed(title="🎯 Auction Sniper Status", color=0x0099ff, 
+                                timestamp=datetime.now(timezone.utc))
+            
+            # Task status
+            hunter_status = "🟢 Running" if self.high_frequency_snipe_scan.is_running() else "🔴 Stopped"
+            intelligence_status = "🟢 Running" if self.update_market_intelligence.is_running() else "🔴 Stopped"
+            
+            embed.add_field(name="🏃 Hunter Task (2s)", value=hunter_status, inline=True)
+            embed.add_field(name="🧠 Intelligence Task (90s)", value=intelligence_status, inline=True)
+            embed.add_field(name="📢 Alert Channel", 
+                           value=f"<#{self.alert_channel_id}>" if self.alert_channel_id else "Not set", 
+                           inline=True)
+            
+            # Configuration
+            embed.add_field(name="💰 Profit Threshold", value=f"{self.profit_threshold:,} coins", inline=True)
+            embed.add_field(name="📊 Min Auction Count", value=str(self.min_auction_count), inline=True)
+            embed.add_field(name="📝 Watchlist Size", value=str(len(self.auction_watchlist)), inline=True)
+            
+            # FMV data status
+            embed.add_field(name="💾 FMV Cache", value=f"{len(self.fmv_data)} items", inline=True)
+            
+            # Memory usage
+            try:
+                process = psutil.Process()
+                rss_mb = process.memory_info().rss / (1024 * 1024)
+                memory_status = f"{rss_mb:.1f}MB"
+                if rss_mb > self.soft_rss_mb:
+                    memory_status += " ⚠️"
+                embed.add_field(name="💾 Memory Usage", value=memory_status, inline=True)
+            except Exception:
+                embed.add_field(name="💾 Memory Usage", value="Unknown", inline=True)
+            
+            # API status
+            api_status = "🟢 Connected" if self.hypixel_client else "🔴 No API Key"
+            embed.add_field(name="🔗 Hypixel API", value=api_status, inline=True)
+            
+            # Performance metrics
+            embed.add_field(name="⏱️ Window Hours", value=str(self.window_hours), inline=True)
+            embed.add_field(name="🔒 Recent Alerts", value=str(len(self.recent_alerts)), inline=True)
+            embed.add_field(name="🆔 Recent UUIDs", value=str(len(self.recent_auction_uuids)), inline=True)
+            
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            self.logger.error(f"Sniper status command error: {e}")
+            await interaction.followup.send("❌ Error retrieving sniper status.", ephemeral=True)
     
     async def _save_sniper_config(self):
         """Save sniper configuration to disk asynchronously."""

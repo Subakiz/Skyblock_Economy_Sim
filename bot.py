@@ -100,6 +100,20 @@ class SkyBlockEconomyBot(commands.Bot):
         except Exception as e:
             logger.error(f"Failed to load auction sniper cog: {e}")
         
+        # Load help cog
+        try:
+            await self.load_extension("cogs.help")
+            logger.info("Loaded help cog")
+        except Exception as e:
+            logger.error(f"Failed to load help cog: {e}")
+        
+        # Load storage janitor cog
+        try:
+            await self.load_extension("cogs.storage_janitor")
+            logger.info("Loaded storage janitor cog")
+        except Exception as e:
+            logger.error(f"Failed to load storage janitor cog: {e}")
+        
         # Start background tasks
         if IMPORTS_SUCCESS:
             # Data collection is now handled by standalone ingestion service

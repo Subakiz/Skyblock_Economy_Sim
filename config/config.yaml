@@ -80,3 +80,42 @@ auction_sniper:
   max_fmv_multiplier: 1.1
   # Thick wall threshold - minimum items at floor price to consider it a "thick wall"
   thick_wall_threshold: 3
+
+# Market Intelligence Configuration (Production-Grade)
+market:
+  # Time window for market analysis (hours)
+  window_hours: 12
+  # Number of lowest prices to track per item
+  lowest_ladder_size: 16
+  # Threshold for considering a price level "thin" (triggers FMV adjustment)
+  thin_wall_threshold: 2
+  # Minimum auction count for items to be in watchlist
+  min_auction_count: 25
+  # Market intelligence update interval (seconds)
+  intel_interval_seconds: 90
+  # Hunter task interval (high-frequency scanning)
+  hunter_interval_seconds: 2
+  # Soft limit on rows processed per cycle
+  rows_soft_cap: 300000
+  # Maximum items in watchlist (performance cap)
+  max_watchlist_items: 2000
+  # Batch size for streaming processing
+  batch_size: 20000
+
+# Memory and Performance Guards
+guards:
+  # Soft RSS limit in MB (skip cycle if exceeded)
+  soft_rss_mb: 1300
+  # Hard RSS limit in MB (emergency scaling)
+  hard_rss_mb: 1500
+
+# Storage Management
+storage:
+  # Total storage cap in GB
+  cap_gb: 70
+  # Headroom before pruning starts
+  headroom_gb: 5
+  # Hours to retain raw data (ephemeral)
+  raw_retention_hours: 2
+  # Days to retain feature summaries
+  summary_retention_days: 30

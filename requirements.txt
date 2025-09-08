@@ -21,3 +21,5 @@ pillow>=10.0.0
 python-dotenv>=1.0.0
 # Async file I/O for Discord command responsiveness
 aiofiles>=23.0.0
+# Memory monitoring for production stability
+psutil>=5.9.0

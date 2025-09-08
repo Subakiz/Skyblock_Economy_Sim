@@ -109,6 +109,9 @@ class AuctionSniper(commands.Cog):
         self.analyst_task_active = False
         
         self.logger.info(f"Enhanced AuctionSniper initialized with memory guards: soft={self.soft_rss_mb}MB")
+        
+        # Set up task intervals dynamically
+        self.update_market_intelligence.change_interval(seconds=self.intel_interval)
     
     def _check_memory_guard(self) -> bool:
         """Check if we should skip processing due to memory pressure."""
@@ -279,7 +282,7 @@ class AuctionSniper(commands.Cog):
         except Exception as e:
             self.logger.error(f"Hunter task error: {e}")
     
-    @tasks.loop(seconds=90)  # Use configured intel interval
+    @tasks.loop()  # Dynamic interval set in setup
     async def update_market_intelligence(self):
         """
         Market Intelligence Task: Generate market intelligence from feature summaries.
@@ -318,27 +321,6 @@ class AuctionSniper(commands.Cog):
                            f"FMV data for {len(self.fmv_data)} items "
                            f"(analyzed {metadata.get('items_analyzed', 0)} items from {metadata.get('hours_analyzed', 0)}h window) "
                            f"in {processing_time:.1f}s")
-        
-        except Exception as e:
-            self.logger.error(f"Market intelligence task error: {e}")
-                # Convert to list of dictionaries to maintain compatibility with existing methods
-                auction_records = df.to_dict('records')
-                
-                # Update watchlist based on item volume in Parquet data
-                await self._update_watchlist_from_parquet(auction_records)
-                
-                # Update FMV data from Parquet using time-windowed data
-                self.update_market_values_from_parquet_windowed(df)
-                
-                # Persist updated data
-                await self._save_persisted_data()
-                
-                processing_time = time.time() - start_time
-                self.logger.info(f"Market intelligence updated: {len(self.auction_watchlist)} watchlist items, "
-                               f"FMV data for {len(self.fmv_data)} items in {processing_time:.1f}s")
-                
-            except Exception as e:
-                self.logger.error(f"Error reading Parquet data: {e}")
         
         except Exception as e:
             self.logger.error(f"Market intelligence task error: {e}")

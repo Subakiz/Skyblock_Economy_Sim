@@ -133,52 +133,8 @@ class ContinuousFeatureIngestor:
         try:
             logger.info("Performing interim flush...")
             
-            # Get current hour summaries and flush them
-            # This ensures the consumer always has fresh data for the current hour
-            current_hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-            
-            if hasattr(self.ingestor, 'current_hour_start') and self.ingestor.current_hour_start:
-                # Build interim summary for current hour
-                summary_records = []
-                for item_name, ladder in self.ingestor.item_ladders.items():
-                    prices, counts, total_count = ladder.get_ladder_data()
-                    
-                    if total_count > 0:  # Only include items with data
-                        # Include additional fields as required
-                        floor_price = prices[0] if prices else 0.0
-                        second_lowest_price = prices[1] if len(prices) > 1 else floor_price
-                        auction_count = total_count
-                        
-                        summary_records.append({
-                            "hour_start": self.ingestor.current_hour_start,
-                            "item_name": item_name,
-                            "prices": prices,
-                            "counts": counts,
-                            "total_count": total_count,
-                            "floor_price": floor_price,
-                            "second_lowest_price": second_lowest_price,
-                            "auction_count": auction_count
-                        })
-                
-                if summary_records:
-                    # Write interim summary (same logic as _commit_hour_summary but non-destructive)
-                    import pandas as pd
-                    df = pd.DataFrame(summary_records)
-                    
-                    # Create partitioned path
-                    partition_path = self.ingestor.feature_summaries_path / (
-                        f"year={self.ingestor.current_hour_start.year}/"
-                        f"month={self.ingestor.current_hour_start.month:02d}/"
-                        f"day={self.ingestor.current_hour_start.day:02d}/"
-                        f"hour={self.ingestor.current_hour_start.hour:02d}"
-                    )
-                    partition_path.mkdir(parents=True, exist_ok=True)
-                    
-                    parquet_file = partition_path / "summary.parquet"
-                    df.to_parquet(parquet_file, index=False)
-                    
-                    logger.info(f"Interim flush completed: {len(summary_records)} items, "
-                              f"size: {parquet_file.stat().st_size / 1024:.1f}KB")
+            # Use the new flush method from FeatureIngestor
+            self.ingestor.flush_current_hour_summary()
             
         except Exception as e:
             logger.error(f"Error during interim flush: {e}")

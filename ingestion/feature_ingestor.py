@@ -10,6 +10,7 @@ Optionally spools raw NDJSON for retry safety during the hour.
 import asyncio
 import json
 import logging
+import os
 import time
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
@@ -114,10 +115,10 @@ class FeatureIngestor:
             raise ValueError("HYPIXEL_API_KEY environment variable is required")
         
         self.hypixel_client = HypixelClient(
-            api_key=api_key,
             base_url=hypixel_config.get("base_url", "https://api.hypixel.net"),
+            api_key=api_key,
             max_requests_per_minute=hypixel_config.get("max_requests_per_minute", 120),
-            timeout=hypixel_config.get("timeout_seconds", 10)
+            timeout_seconds=hypixel_config.get("timeout_seconds", 10)
         )
         
         # Current hour state
@@ -167,6 +168,88 @@ class FeatureIngestor:
             self.logger.error(f"Failed to open spool file: {e}")
             self.raw_spool_handle = None
     
+    def _build_summary_records(self) -> List[Dict[str, Any]]:
+        """Build summary records from current item ladders."""
+        summary_records = []
+        for item_name, ladder in self.item_ladders.items():
+            prices, counts, total_count = ladder.get_ladder_data()
+            
+            if total_count > 0:  # Only include items with data
+                # Include additional fields as required by consumer
+                floor_price = prices[0] if prices else 0.0
+                second_lowest_price = prices[1] if len(prices) > 1 else floor_price
+                auction_count = total_count
+                
+                summary_records.append({
+                    "hour_start": self.current_hour_start,
+                    "item_name": item_name,
+                    "prices": prices,
+                    "counts": counts,
+                    "total_count": total_count,
+                    "floor_price": floor_price,
+                    "second_lowest_price": second_lowest_price,
+                    "auction_count": auction_count
+                })
+        return summary_records
+
+    def _write_summary_for_hour(self, hour_start: datetime, summary_records: List[Dict[str, Any]], 
+                               dst_dir: Optional[Path] = None, overwrite: bool = True):
+        """Write summary records to Parquet with atomic write."""
+        if not summary_records:
+            return
+            
+        try:
+            # Use provided directory or default
+            if dst_dir is None:
+                dst_dir = self.feature_summaries_path
+                
+            # Create partitioned path
+            partition_path = dst_dir / (
+                f"year={hour_start.year}/"
+                f"month={hour_start.month:02d}/"
+                f"day={hour_start.day:02d}/"
+                f"hour={hour_start.hour:02d}"
+            )
+            partition_path.mkdir(parents=True, exist_ok=True)
+            
+            # Write with atomic operation: summary.parquet.tmp -> summary.parquet
+            parquet_file = partition_path / "summary.parquet"
+            temp_file = partition_path / "summary.parquet.tmp"
+            
+            # Write to temporary file first
+            df = pd.DataFrame(summary_records)
+            df.to_parquet(temp_file, index=False)
+            
+            # Atomic rename
+            import os
+            os.replace(str(temp_file), str(parquet_file))
+            
+            self.logger.info(f"Wrote summary for {hour_start} with {len(summary_records)} items to {partition_path}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to write summary for {hour_start}: {e}")
+            # Clean up temp file if it exists
+            temp_file = dst_dir / f"year={hour_start.year}/month={hour_start.month:02d}/day={hour_start.day:02d}/hour={hour_start.hour:02d}/summary.parquet.tmp"
+            if temp_file.exists():
+                temp_file.unlink()
+
+    def flush_current_hour_summary(self):
+        """Write an interim summary for the current hour using atomic write."""
+        if not self.current_hour_start:
+            self.logger.warning("No current hour data to flush")
+            return
+            
+        try:
+            summary_records = self._build_summary_records()
+            if summary_records:
+                self._write_summary_for_hour(self.current_hour_start, summary_records, overwrite=True)
+                self.logger.info(f"Wrote interim summary for {self.current_hour_start} with {len(summary_records)} items")
+            else:
+                self.logger.debug("No data to flush for current hour")
+                
+        except Exception as e:
+            self.logger.error(f"Failed to flush current hour summary: {e}")
+
     async def _commit_hour_summary(self):
         """Commit the current hour's data as a feature summary."""
         if not self.current_hour_start:
@@ -178,38 +261,9 @@ class FeatureIngestor:
                 self.raw_spool_handle.close()
                 self.raw_spool_handle = None
             
-            # Build summary records
-            summary_records = []
-            for item_name, ladder in self.item_ladders.items():
-                prices, counts, total_count = ladder.get_ladder_data()
-                
-                if total_count > 0:  # Only include items with data
-                    summary_records.append({
-                        "hour_start": self.current_hour_start,
-                        "item_name": item_name,
-                        "prices": prices,
-                        "counts": counts,
-                        "total_count": total_count
-                    })
-            
-            if summary_records:
-                # Write Parquet summary
-                df = pd.DataFrame(summary_records)
-                
-                # Create partitioned path: year=2024/month=03/day=15/hour=14/
-                partition_path = self.feature_summaries_path / (
-                    f"year={self.current_hour_start.year}/"
-                    f"month={self.current_hour_start.month:02d}/"
-                    f"day={self.current_hour_start.day:02d}/"
-                    f"hour={self.current_hour_start.hour:02d}"
-                )
-                partition_path.mkdir(parents=True, exist_ok=True)
-                
-                parquet_file = partition_path / "summary.parquet"
-                df.to_parquet(parquet_file, index=False)
-                
-                self.logger.info(f"Committed hour summary: {len(summary_records)} items, "
-                               f"size: {parquet_file.stat().st_size / 1024:.1f}KB")
+            # Build and write summary records
+            summary_records = self._build_summary_records()
+            self._write_summary_for_hour(self.current_hour_start, summary_records)
             
             # Clean up raw spool file (ephemeral)
             if self.raw_spool_file and self.raw_spool_file.exists():

@@ -13,7 +13,7 @@ import logging
 import asyncio
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, List
 from io import BytesIO
 
 import discord
@@ -36,13 +36,55 @@ class PlotCog(commands.Cog):
         self.bot = bot
         self.logger = logging.getLogger(f"{__name__}.PlotCog")
         
-        # Data paths to check
+        # Data paths to check in priority order
         self.data_paths = [
-            Path("data/bazaar"),
-            Path("data/bazaar_snapshots.ndjson")
+            Path("data/bazaar_history"),  # Parquet under bazaar_history (highest priority)
+            Path("data/bazaar"),         # Parquet under bazaar/
+            Path("data/bazaar_snapshots.ndjson")  # NDJSON file (fallback)
         ]
         
         self.logger.info("Enhanced Plot cog initialized")
+    
+    def _normalize_item_name(self, item: str) -> str:
+        """Normalize item name (spaces to underscores, uppercase)."""
+        return item.strip().replace(' ', '_').replace('-', '_').upper()
+    
+    def _get_item_suggestions(self, item: str, available_items: List[str], max_suggestions: int = 5) -> List[str]:
+        """Get fuzzy suggestions for item names."""
+        normalized_item = self._normalize_item_name(item)
+        normalized_available = [self._normalize_item_name(i) for i in available_items]
+        
+        # Simple alias mapping for common items
+        aliases = {
+            'WHEAT': ['WHEAT', 'SEEDS'],
+            'ENCHANTED_FLINT': ['ENCHANTED_FLINT', 'E_FLINT', 'EFLINT'],
+            'COBBLESTONE': ['COBBLESTONE', 'COBBLE', 'STONE'],
+            'EMERALD': ['EMERALD', 'EMERALDS'],
+            'DIAMOND': ['DIAMOND', 'DIAMONDS']
+        }
+        
+        suggestions = []
+        
+        # Check exact matches first (after normalization)
+        if normalized_item in normalized_available:
+            idx = normalized_available.index(normalized_item)
+            suggestions.append(available_items[idx])
+        
+        # Check alias matches
+        for canonical, alias_list in aliases.items():
+            if normalized_item in [self._normalize_item_name(a) for a in alias_list]:
+                if canonical in normalized_available:
+                    idx = normalized_available.index(canonical)
+                    if available_items[idx] not in suggestions:
+                        suggestions.append(available_items[idx])
+        
+        # Simple substring matching
+        for i, norm_item in enumerate(normalized_available):
+            if normalized_item in norm_item or norm_item in normalized_item:
+                if available_items[i] not in suggestions:
+                    suggestions.append(available_items[i])
+        
+        return suggestions[:max_suggestions]
     
     def _detect_data_source(self) -> Optional[Path]:
         """Detect available bazaar data source."""
@@ -88,7 +130,7 @@ class PlotCog(commands.Cog):
                     return None
             
             # Detect timestamp column robustly
-            timestamp_cols = ['timestamp', 'time', 'datetime', 'created_at', 'updated_at']
+            timestamp_cols = ['timestamp', 'time', 'datetime', 'created_at', 'updated_at', 'ts']
             timestamp_col = None
             
             for col in timestamp_cols:
@@ -111,7 +153,7 @@ class PlotCog(commands.Cog):
             df = df[(df[timestamp_col] >= start_time) & (df[timestamp_col] <= end_time)]
             
             # Filter by item (flexible product ID detection)
-            product_cols = ['product_id', 'productId', 'item_name', 'item', 'name']
+            product_cols = ['product_id', 'productId', 'product', 'item_name', 'item', 'name']
             product_col = None
             
             for col in product_cols:
@@ -123,10 +165,18 @@ class PlotCog(commands.Cog):
                 self.logger.error(f"No product column found in columns: {list(df.columns)}")
                 return None
             
-            # Filter by item (case-insensitive)
-            item_data = df[df[product_col].str.upper() == item.upper()]
+            # Store available items for suggestions
+            available_items = df[product_col].unique().tolist()
+            
+            # Normalize input item name and try to match
+            normalized_item = self._normalize_item_name(item)
+            
+            # Try exact normalized match first
+            item_data = df[df[product_col].str.upper().str.replace(' ', '_').str.replace('-', '_') == normalized_item]
             
             if item_data.empty:
+                # Store available items for later suggestion use
+                self._last_available_items = available_items
                 return None
             
             # Ensure we have required price columns
@@ -156,22 +206,25 @@ class PlotCog(commands.Cog):
             })
             
             # Add volume and order columns if available
-            volume_cols = ['buy_volume', 'buyVolume', 'sell_volume', 'sellVolume']
-            order_cols = ['buy_orders', 'buyOrders', 'sell_orders', 'sellOrders']
-            
-            for col in volume_cols:
+            for col in ['buy_volume', 'buyVolume', 'buy_volume_coins']:
                 if col in item_data.columns:
-                    if 'buy' in col.lower():
-                        item_data = item_data.rename(columns={col: 'buy_volume'})
-                    else:
-                        item_data = item_data.rename(columns={col: 'sell_volume'})
+                    item_data = item_data.rename(columns={col: 'buy_volume'})
+                    break
             
-            for col in order_cols:
+            for col in ['sell_volume', 'sellVolume', 'sell_volume_coins']:
                 if col in item_data.columns:
-                    if 'buy' in col.lower():
-                        item_data = item_data.rename(columns={col: 'buy_orders'})
-                    else:
-                        item_data = item_data.rename(columns={col: 'sell_orders'})
+                    item_data = item_data.rename(columns={col: 'sell_volume'})
+                    break
+            
+            for col in ['buy_orders', 'buyOrders']:
+                if col in item_data.columns:
+                    item_data = item_data.rename(columns={col: 'buy_orders'})
+                    break
+                    
+            for col in ['sell_orders', 'sellOrders']:
+                if col in item_data.columns:
+                    item_data = item_data.rename(columns={col: 'sell_orders'})
+                    break
             
             # Fill missing volume/order columns with defaults
             if 'buy_volume' not in item_data.columns:
@@ -358,10 +411,23 @@ class PlotCog(commands.Cog):
             df = self._load_bazaar_data(item, hours)
             
             if df is None or df.empty:
-                await interaction.followup.send(
-                    f"❌ No bazaar data found for **{item}** in the last {hours} hours.\n"
-                    f"Please check the item name and try again. Example: `WHEAT` or `ENCHANTED_FLINT`"
-                )
+                # Try to get suggestions if available
+                suggestions = []
+                if hasattr(self, '_last_available_items'):
+                    suggestions = self._get_item_suggestions(item, self._last_available_items)
+                
+                error_msg = f"❌ No bazaar data found for **{item}** in the last {hours} hours."
+                
+                if suggestions:
+                    error_msg += f"\n\n💡 **Did you mean:**\n" + "\n".join([f"• `{suggestion}`" for suggestion in suggestions])
+                else:
+                    error_msg += f"\n\n💡 **Examples:** `WHEAT`, `ENCHANTED_FLINT`, `COBBLESTONE`"
+                    
+                paths_searched = [str(p) for p in self.data_paths if p.exists()]
+                if paths_searched:
+                    error_msg += f"\n\n📁 **Searched:** {', '.join(paths_searched)}"
+                
+                await interaction.followup.send(error_msg)
                 return
             
             # Resample and clean data

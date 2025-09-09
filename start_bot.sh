@@ -123,7 +123,7 @@ else:
 
 # Create necessary directories
 echo "Setting up directories..."
-mkdir -p data logs data/auction_history data/bazaar_history
+mkdir -p data logs data/auction_history data/bazaar_history data/feature_summaries data/raw_spool
 
 # Check configuration
 if [[ ! -f "config/config.yaml" ]]; then
@@ -131,23 +131,23 @@ if [[ ! -f "config/config.yaml" ]]; then
     exit 1
 fi
 
-# Check if data ingestion entry point exists
-if [[ ! -f "data_ingestion/run_ingestion.py" ]]; then
-    echo -e "${RED}Error: data_ingestion/run_ingestion.py not found${NC}"
+# Check if feature ingestor entry point exists
+if [[ ! -f "scripts/run_feature_ingestor.py" ]]; then
+    echo -e "${RED}Error: scripts/run_feature_ingestor.py not found${NC}"
     exit 1
 fi
 
 echo -e "${GREEN}✅ Pre-flight checks passed${NC}"
 echo ""
 
-# Phase 1: Start Data Ingestion Service (Background Process)
-echo -e "${BLUE}Phase 1: Starting Data Ingestion Service...${NC}"
-nohup python3 data_ingestion/run_ingestion.py > logs/ingestion.log 2>&1 &
+# Phase 1: Start Feature Ingestor Service (Background Process)
+echo -e "${BLUE}Phase 1: Starting Feature Ingestor Service...${NC}"
+nohup python3 scripts/run_feature_ingestor.py > logs/ingestor.log 2>&1 &
 INGESTION_PID=$!
 echo $INGESTION_PID > "$INGESTION_PID_FILE"
 
-echo -e "${GREEN}✅ Data ingestion service started (PID: $INGESTION_PID)${NC}"
-echo -e "   Logs: ${YELLOW}logs/ingestion.log${NC}"
+echo -e "${GREEN}✅ Feature ingestor service started (PID: $INGESTION_PID)${NC}"
+echo -e "   Logs: ${YELLOW}logs/ingestor.log${NC}"
 echo -e "   Features: Canonical item normalization, auction/bazaar loops, Parquet output"
 echo ""
 

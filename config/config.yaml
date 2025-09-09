@@ -94,7 +94,7 @@ market:
   # Minimum auction count for items to be in watchlist
   min_auction_count: 25
   # Market intelligence update interval (seconds)
-  intel_interval_seconds: 90
+  intel_interval_seconds: 150
   # Hunter task interval (high-frequency scanning)
   hunter_interval_seconds: 2
   # Soft limit on rows processed per cycle

@@ -18,6 +18,7 @@ import re
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+import numpy as np
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -28,6 +29,27 @@ import psutil
 from ingestion.common.hypixel_client import HypixelClient
 from ingestion.item_processing import create_canonical_name
 from ingestion.feature_consumer import FeatureConsumer
+
+
+def convert_np(obj):
+    """
+    Convert NumPy types to native Python types for JSON serialization.
+    
+    Args:
+        obj: Any object that might contain NumPy types
+        
+    Returns:
+        The object converted to native Python types
+    """
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    return obj
 
 
 class AuctionSniper(commands.Cog):
@@ -185,12 +207,12 @@ class AuctionSniper(commands.Cog):
                 "count": len(self.auction_watchlist)
             }
             async with aiofiles.open(watchlist_file, "w") as f:
-                await f.write(json.dumps(watchlist_data, indent=2))
+                await f.write(json.dumps(watchlist_data, indent=2, default=convert_np))
             
             # Save FMV data
             fmv_file = self.data_dir / "fmv_cache.json"
             async with aiofiles.open(fmv_file, "w") as f:
-                await f.write(json.dumps(self.fmv_data, indent=2))
+                await f.write(json.dumps(self.fmv_data, indent=2, default=convert_np))
             
             self.logger.debug("Saved persisted data to disk")
         
@@ -409,8 +431,8 @@ class AuctionSniper(commands.Cog):
                         fmv, method = self._calculate_depth_aware_fmv(price_levels)
                         
                         self.fmv_data[item_name] = {
-                            "fmv": fmv,
-                            "median": filtered_prices[len(filtered_prices) // 2],
+                            "fmv": float(fmv),
+                            "median": float(filtered_prices[len(filtered_prices) // 2]),
                             "samples": len(prices),
                             "updated_at": datetime.now(timezone.utc).isoformat(),
                             "method": method,
@@ -420,8 +442,8 @@ class AuctionSniper(commands.Cog):
                         # Only one price available, use it but with discount
                         fmv = filtered_prices[0] * 0.95  # 5% discount for single sample
                         self.fmv_data[item_name] = {
-                            "fmv": fmv,
-                            "median": filtered_prices[0],
+                            "fmv": float(fmv),
+                            "median": float(filtered_prices[0]),
                             "samples": 1,
                             "updated_at": datetime.now(timezone.utc).isoformat(),
                             "method": "single_bin_discounted",
@@ -1051,7 +1073,7 @@ class AuctionSniper(commands.Cog):
             }
             
             async with aiofiles.open(config_file, "w") as f:
-                await f.write(json.dumps(config_data, indent=2))
+                await f.write(json.dumps(config_data, indent=2, default=convert_np))
             
             self.logger.debug("Saved sniper configuration")
         

@@ -444,6 +444,15 @@ class PlotCog(commands.Cog):
     def _create_enhanced_plot(self, df: pd.DataFrame, item: str) -> BytesIO:
         """Create two-panel enhanced plot."""
         try:
+            # Check if DataFrame is empty or has insufficient data
+            if df.empty:
+                self.logger.warning(f"Cannot create plot for {item}: DataFrame is empty")
+                return None
+            
+            if len(df) < 2:
+                self.logger.warning(f"Cannot create plot for {item}: Only {len(df)} data point(s), need at least 2")
+                return None
+            
             # Create figure with subplots
             fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
             fig.suptitle(f'{item} — Market Overview', fontsize=16, fontweight='bold')
@@ -607,9 +616,15 @@ class PlotCog(commands.Cog):
             plot_buffer = self._create_enhanced_plot(df_enhanced, item)
             
             if plot_buffer is None:
-                await interaction.followup.send(
-                    f"❌ Failed to generate plot for **{item}**. Please try again later."
-                )
+                # Check if this was due to insufficient data
+                if len(df_enhanced) < 2:
+                    await interaction.followup.send(
+                        f"❌ Insufficient data for **{item}**. Found {len(df_enhanced)} data point(s), but need at least 2 to create a chart. Try a longer time window."
+                    )
+                else:
+                    await interaction.followup.send(
+                        f"❌ Failed to generate plot for **{item}**. Please try again later."
+                    )
                 return
             
             # Create Discord file and embed

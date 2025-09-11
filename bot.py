@@ -249,31 +249,47 @@ async def status_command(interaction: discord.Interaction):
         data_dir = Path("data")
         auction_records = 0
         bazaar_records = 0
+        feature_summaries = 0
         
         if data_dir.exists():
             # Check for Parquet datasets (new architecture)
             auction_parquet_dir = data_dir / "auction_history"
             bazaar_parquet_dir = data_dir / "bazaar_history"
+            feature_summaries_dir = data_dir / "feature_summaries"
             
             # Count auction records from Parquet
             if auction_parquet_dir.exists() and any(auction_parquet_dir.rglob("*.parquet")):
                 try:
                     import pyarrow.parquet as pq
                     parquet_files = list(auction_parquet_dir.rglob("*.parquet"))
-                    auction_records = sum(pq.read_table(f).num_rows for f in parquet_files[:10])  # Sample recent files
+                    # Count all files, not just first 10
+                    auction_records = sum(pq.read_table(f).num_rows for f in parquet_files)
                 except Exception as e:
                     logger.debug(f"Error reading auction Parquet data: {e}")
-                    auction_records = len(list(auction_parquet_dir.rglob("*.parquet"))) * 1000  # Estimate
+                    # Fallback to file count estimate
+                    auction_records = len(list(auction_parquet_dir.rglob("*.parquet"))) * 1000
             
             # Count bazaar records from Parquet
             if bazaar_parquet_dir.exists() and any(bazaar_parquet_dir.rglob("*.parquet")):
                 try:
                     import pyarrow.parquet as pq
                     parquet_files = list(bazaar_parquet_dir.rglob("*.parquet"))
-                    bazaar_records = sum(pq.read_table(f).num_rows for f in parquet_files[:10])  # Sample recent files
+                    # Count all files, not just first 10
+                    bazaar_records = sum(pq.read_table(f).num_rows for f in parquet_files)
                 except Exception as e:
                     logger.debug(f"Error reading bazaar Parquet data: {e}")
-                    bazaar_records = len(list(bazaar_parquet_dir.rglob("*.parquet"))) * 100  # Estimate
+                    # Fallback to file count estimate
+                    bazaar_records = len(list(bazaar_parquet_dir.rglob("*.parquet"))) * 100
+            
+            # Count feature summaries
+            if feature_summaries_dir.exists() and any(feature_summaries_dir.rglob("*.parquet")):
+                try:
+                    import pyarrow.parquet as pq
+                    summary_files = list(feature_summaries_dir.rglob("*.parquet"))
+                    feature_summaries = sum(pq.read_table(f).num_rows for f in summary_files)
+                except Exception as e:
+                    logger.debug(f"Error reading feature summaries: {e}")
+                    feature_summaries = len(list(feature_summaries_dir.rglob("*.parquet"))) * 50
             
             # Fallback to old NDJSON files if Parquet doesn't exist
             if auction_records == 0:
@@ -287,6 +303,8 @@ async def status_command(interaction: discord.Interaction):
                 if bazaar_file.exists():
                     with open(bazaar_file, 'r') as f:
                         bazaar_records = sum(1 for _ in f)
+        else:
+            logger.warning("Data directory does not exist")
 
         # Check model directory
         model_dir = Path("models")
@@ -309,7 +327,7 @@ async def status_command(interaction: discord.Interaction):
         
         embed.add_field(
             name="📊 Data Records",
-            value=f"Auction: {auction_records:,}\nBazaar: {bazaar_records:,}",
+            value=f"Auction: {auction_records:,}\nBazaar: {bazaar_records:,}\nFeatures: {feature_summaries:,}",
             inline=True
         )
         
@@ -338,6 +356,15 @@ async def status_command(interaction: discord.Interaction):
             value="✅ Available" if PHASE3_AVAILABLE else "❌ Unavailable",
             inline=True
         )
+        
+        # Add data status note if no data is available
+        total_records = auction_records + bazaar_records + feature_summaries
+        if total_records == 0:
+            embed.add_field(
+                name="ℹ️ Data Status",
+                value="No data available yet. The data ingestion service may need to be started.",
+                inline=False
+            )
         
         embed.add_field(
             name="📥 Imports",

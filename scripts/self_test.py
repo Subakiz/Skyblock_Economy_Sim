@@ -25,21 +25,38 @@ def test_environment():
     """Test environment variables and dependencies."""
     print("🔧 Testing environment...")
     
+    # Load .env file first
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        print("  ⚠️ python-dotenv not available, checking system env vars only")
+    
     # Check environment variables
     discord_token = os.getenv('DISCORD_BOT_TOKEN')
     hypixel_key = os.getenv('HYPIXEL_API_KEY')
     
+    env_success = True
+    
     if not discord_token:
         print("  ❌ DISCORD_BOT_TOKEN not set")
-        return False
+        env_success = False
+    elif discord_token.startswith('test_'):
+        print(f"  ⚠️ DISCORD_BOT_TOKEN is a test token ({len(discord_token)} chars) - OK for testing")
     else:
         print(f"  ✅ DISCORD_BOT_TOKEN present ({len(discord_token)} chars)")
     
     if not hypixel_key:
         print("  ❌ HYPIXEL_API_KEY not set")
-        return False
+        env_success = False
+    elif hypixel_key.startswith('test_'):
+        print(f"  ⚠️ HYPIXEL_API_KEY is a test key ({len(hypixel_key)} chars) - OK for testing")
     else:
         print(f"  ✅ HYPIXEL_API_KEY present ({len(hypixel_key)} chars)")
+    
+    # For testing purposes, accept test tokens
+    if discord_token and hypixel_key:
+        env_success = True
     
     # Check required packages
     required_packages = [
@@ -57,9 +74,9 @@ def test_environment():
     
     if missing_packages:
         print(f"  ❌ Missing packages: {missing_packages}")
-        return False
+        env_success = False
     
-    return True
+    return env_success
 
 def test_directories():
     """Test that required directories exist or can be created."""

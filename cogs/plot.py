@@ -96,7 +96,7 @@ class PlotCog(commands.Cog):
                 return path
         return None
     
-    def _load_bazaar_data(self, item: str, hours: int = 3) -> Optional[pd.DataFrame]:
+    async def _load_bazaar_data(self, item: str, hours: int = 3) -> Optional[pd.DataFrame]:
         """Load bazaar data for the specified item and time window with multiple fallbacks."""
         try:
             search_results = []  # Track what we searched and why it failed
@@ -550,7 +550,7 @@ class PlotCog(commands.Cog):
             self.logger.info(f"Plot command requested for {item} ({hours}h)")
             
             # Load bazaar data
-            df = self._load_bazaar_data(item, hours)
+            df = await self._load_bazaar_data(item, hours)
             
             if df is None or df.empty:
                 # Get detailed search results for error reporting

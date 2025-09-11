@@ -121,6 +121,27 @@ class SkyBlockEconomyBot(commands.Bot):
         except Exception as e:
             logger.error(f"Failed to load plot cog: {e}")
         
+        # Load market pulse cog
+        try:
+            await self.load_extension("cogs.market_pulse")
+            logger.info("Loaded market pulse cog")
+        except Exception as e:
+            logger.error(f"Failed to load market pulse cog: {e}")
+        
+        # Load enhanced analyze cog
+        try:
+            await self.load_extension("cogs.analyze")
+            logger.info("Loaded enhanced analyze cog")
+        except Exception as e:
+            logger.error(f"Failed to load analyze cog: {e}")
+        
+        # Load diagnostics cog
+        try:
+            await self.load_extension("cogs.diag")
+            logger.info("Loaded diagnostics cog")
+        except Exception as e:
+            logger.error(f"Failed to load diagnostics cog: {e}")
+        
         # Start background tasks
         if IMPORTS_SUCCESS:
             # Data collection is now handled by standalone ingestion service

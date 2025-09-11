@@ -22,6 +22,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import psutil
+from dotenv import load_dotenv
 
 from ingestion.common.hypixel_client import HypixelClient
 from ingestion.item_processing import create_canonical_name
@@ -91,6 +92,9 @@ class FeatureIngestor:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.logger = logging.getLogger(f"{__name__}.FeatureIngestor")
+        
+        # Load environment variables from .env for defense-in-depth
+        load_dotenv()
         
         # Configuration
         market_config = config.get("market", {})

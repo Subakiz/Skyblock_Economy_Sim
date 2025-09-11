@@ -15,6 +15,7 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Tuple, Dict, Any, List
 from io import BytesIO
+import json
 
 import discord
 from discord.ext import commands
@@ -25,6 +26,7 @@ import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import aiohttp
 
 logger = logging.getLogger(__name__)
 
@@ -95,152 +97,292 @@ class PlotCog(commands.Cog):
         return None
     
     def _load_bazaar_data(self, item: str, hours: int = 3) -> Optional[pd.DataFrame]:
-        """Load bazaar data for the specified item and time window."""
+        """Load bazaar data for the specified item and time window with multiple fallbacks."""
         try:
-            data_source = self._detect_data_source()
-            if not data_source:
-                self.logger.warning("No bazaar data source found")
-                return None
+            search_results = []  # Track what we searched and why it failed
             
             # Calculate time window
             end_time = datetime.now(timezone.utc)
             start_time = end_time - timedelta(hours=hours)
             
-            if data_source.is_dir():
-                # Directory-based storage
-                dfs = []
-                for file_path in data_source.glob("*.parquet"):
-                    try:
-                        df = pd.read_parquet(file_path)
-                        dfs.append(df)
-                    except Exception as e:
-                        self.logger.error(f"Failed to read {file_path}: {e}")
+            # Try each data source in priority order
+            for i, data_path in enumerate(self.data_paths, 1):
+                source_name = data_path.name if data_path.is_file() else data_path.name + "/"
+                self.logger.debug(f"Checking data source {i}: {source_name}")
                 
-                if not dfs:
-                    return None
-                    
-                df = pd.concat(dfs, ignore_index=True)
+                if not data_path.exists():
+                    search_results.append(f"❌ {source_name}: Path does not exist")
+                    continue
                 
-            else:
-                # NDJSON file
                 try:
-                    df = pd.read_json(data_source, lines=True)
-                except Exception as e:
-                    self.logger.error(f"Failed to read NDJSON {data_source}: {e}")
-                    return None
-            
-            # Detect timestamp column robustly
-            timestamp_cols = ['timestamp', 'time', 'datetime', 'created_at', 'updated_at', 'ts']
-            timestamp_col = None
-            
-            for col in timestamp_cols:
-                if col in df.columns:
-                    timestamp_col = col
-                    break
-            
-            # Fallback: look for any column with 'time' in the name
-            if timestamp_col is None:
-                time_cols = [col for col in df.columns if 'time' in col.lower()]
-                if time_cols:
-                    timestamp_col = time_cols[0]
-            
-            if timestamp_col is None:
-                self.logger.error(f"No timestamp column found in columns: {list(df.columns)}")
-                return None
-            
-            # Convert timestamp and filter by time window
-            df[timestamp_col] = pd.to_datetime(df[timestamp_col])
-            df = df[(df[timestamp_col] >= start_time) & (df[timestamp_col] <= end_time)]
-            
-            # Filter by item (flexible product ID detection)
-            product_cols = ['product_id', 'productId', 'product', 'item_name', 'item', 'name']
-            product_col = None
-            
-            for col in product_cols:
-                if col in df.columns:
-                    product_col = col
-                    break
-            
-            if product_col is None:
-                self.logger.error(f"No product column found in columns: {list(df.columns)}")
-                return None
-            
-            # Store available items for suggestions
-            available_items = df[product_col].unique().tolist()
-            
-            # Normalize input item name and try to match
-            normalized_item = self._normalize_item_name(item)
-            
-            # Try exact normalized match first
-            item_data = df[df[product_col].str.upper().str.replace(' ', '_').str.replace('-', '_') == normalized_item]
-            
-            if item_data.empty:
-                # Store available items for later suggestion use
-                self._last_available_items = available_items
-                return None
-            
-            # Ensure we have required price columns
-            buy_col = None
-            sell_col = None
-            
-            # Check for various column naming patterns
-            for col in ['buy_price', 'buyPrice', 'buy_price_coins', 'instant_buy']:
-                if col in item_data.columns:
-                    buy_col = col
-                    break
-            
-            for col in ['sell_price', 'sellPrice', 'sell_price_coins', 'instant_sell']:
-                if col in item_data.columns:
-                    sell_col = col
-                    break
-            
-            if buy_col is None or sell_col is None:
-                self.logger.error(f"Required price columns not found. Available: {list(item_data.columns)}")
-                return None
-            
-            # Rename columns to standard names
-            item_data = item_data.rename(columns={
-                timestamp_col: 'timestamp',
-                buy_col: 'buy_price',
-                sell_col: 'sell_price'
-            })
-            
-            # Add volume and order columns if available
-            for col in ['buy_volume', 'buyVolume', 'buy_volume_coins']:
-                if col in item_data.columns:
-                    item_data = item_data.rename(columns={col: 'buy_volume'})
-                    break
-            
-            for col in ['sell_volume', 'sellVolume', 'sell_volume_coins']:
-                if col in item_data.columns:
-                    item_data = item_data.rename(columns={col: 'sell_volume'})
-                    break
-            
-            for col in ['buy_orders', 'buyOrders']:
-                if col in item_data.columns:
-                    item_data = item_data.rename(columns={col: 'buy_orders'})
-                    break
+                    df = None
+                    files_found = 0
                     
-            for col in ['sell_orders', 'sellOrders']:
-                if col in item_data.columns:
-                    item_data = item_data.rename(columns={col: 'sell_orders'})
-                    break
+                    if data_path.is_dir():
+                        # Directory-based storage (parquet files)
+                        parquet_files = list(data_path.glob("*.parquet"))
+                        files_found = len(parquet_files)
+                        
+                        if not parquet_files:
+                            search_results.append(f"❌ {source_name}: No parquet files found")
+                            continue
+                        
+                        dfs = []
+                        for file_path in parquet_files:
+                            try:
+                                file_df = pd.read_parquet(file_path)
+                                dfs.append(file_df)
+                            except Exception as e:
+                                self.logger.error(f"Failed to read {file_path}: {e}")
+                        
+                        if not dfs:
+                            search_results.append(f"❌ {source_name}: {files_found} files found but all failed to read")
+                            continue
+                            
+                        df = pd.concat(dfs, ignore_index=True)
+                        
+                    else:
+                        # NDJSON file
+                        try:
+                            # For NDJSON, we need to parse it more carefully for bazaar data
+                            records = []
+                            line_count = 0
+                            
+                            with open(data_path, 'r') as f:
+                                for line in f:
+                                    try:
+                                        data = json.loads(line.strip())
+                                        line_count += 1
+                                        
+                                        # Parse bazaar snapshot format
+                                        if 'products' in data:
+                                            timestamp = data.get('timestamp', data.get('lastUpdated'))
+                                            for product_id, product_data in data['products'].items():
+                                                record = {
+                                                    'timestamp': timestamp,
+                                                    'product_id': product_id,
+                                                    'buy_price': product_data.get('buy_summary', [{}])[0].get('pricePerUnit', 0) if product_data.get('buy_summary') else 0,
+                                                    'sell_price': product_data.get('sell_summary', [{}])[0].get('pricePerUnit', 0) if product_data.get('sell_summary') else 0,
+                                                    'buy_volume': product_data.get('quick_status', {}).get('buyMovingWeek', 0),
+                                                    'sell_volume': product_data.get('quick_status', {}).get('sellMovingWeek', 0),
+                                                    'buy_orders': product_data.get('quick_status', {}).get('buyOrders', 0),
+                                                    'sell_orders': product_data.get('quick_status', {}).get('sellOrders', 0)
+                                                }
+                                                records.append(record)
+                                    except json.JSONDecodeError:
+                                        continue
+                            
+                            if records:
+                                df = pd.DataFrame(records)
+                                files_found = line_count
+                            else:
+                                search_results.append(f"❌ {source_name}: {line_count} lines read but no valid bazaar data found")
+                                continue
+                                
+                        except Exception as e:
+                            search_results.append(f"❌ {source_name}: Failed to read NDJSON - {e}")
+                            continue
+                    
+                    if df is None or df.empty:
+                        search_results.append(f"❌ {source_name}: No data loaded from {files_found} files")
+                        continue
+                    
+                    # Detect and normalize column names
+                    timestamp_col = None
+                    product_col = None
+                    
+                    # Find timestamp column
+                    for col in ['timestamp', 'time', 'datetime', 'created_at', 'updated_at', 'ts']:
+                        if col in df.columns:
+                            timestamp_col = col
+                            break
+                    
+                    if timestamp_col is None:
+                        time_cols = [col for col in df.columns if 'time' in col.lower()]
+                        if time_cols:
+                            timestamp_col = time_cols[0]
+                    
+                    # Find product column
+                    for col in ['product_id', 'productId', 'product', 'item_name', 'item', 'name']:
+                        if col in df.columns:
+                            product_col = col
+                            break
+                    
+                    if timestamp_col is None:
+                        search_results.append(f"❌ {source_name}: No timestamp column found in {list(df.columns)}")
+                        continue
+                    
+                    if product_col is None:
+                        search_results.append(f"❌ {source_name}: No product column found in {list(df.columns)}")
+                        continue
+                    
+                    # Convert timestamp and filter by time
+                    df[timestamp_col] = pd.to_datetime(df[timestamp_col], utc=True)
+                    time_filtered_df = df[(df[timestamp_col] >= start_time) & (df[timestamp_col] <= end_time)]
+                    
+                    if time_filtered_df.empty:
+                        oldest_time = df[timestamp_col].min()
+                        newest_time = df[timestamp_col].max()
+                        search_results.append(f"❌ {source_name}: {len(df)} rows found but none in time window. Available: {oldest_time} to {newest_time}")
+                        continue
+                    
+                    # Filter by item
+                    normalized_item = self._normalize_item_name(item)
+                    available_items = time_filtered_df[product_col].unique().tolist()
+                    
+                    # Try exact normalized match
+                    item_mask = time_filtered_df[product_col].str.upper().str.replace(' ', '_').str.replace('-', '_') == normalized_item
+                    item_data = time_filtered_df[item_mask]
+                    
+                    if item_data.empty:
+                        # Try fuzzy matching for suggestions
+                        suggestions = self._get_item_suggestions(item, available_items, max_suggestions=5)
+                        search_results.append(f"❌ {source_name}: {len(time_filtered_df)} rows in time window but item '{item}' not found. Available items: {len(available_items)}. Suggestions: {', '.join(suggestions) if suggestions else 'None'}")
+                        continue
+                    
+                    # Normalize column names to standard format
+                    column_mapping = {timestamp_col: 'timestamp', product_col: 'product_id'}
+                    
+                    # Map price columns
+                    for col in ['buy_price', 'buyPrice', 'buy_price_coins', 'instant_buy']:
+                        if col in item_data.columns:
+                            column_mapping[col] = 'buy_price'
+                            break
+                    
+                    for col in ['sell_price', 'sellPrice', 'sell_price_coins', 'instant_sell']:
+                        if col in item_data.columns:
+                            column_mapping[col] = 'sell_price'
+                            break
+                    
+                    if 'buy_price' not in column_mapping.values() or 'sell_price' not in column_mapping.values():
+                        search_results.append(f"❌ {source_name}: Item found but missing required price columns. Available: {list(item_data.columns)}")
+                        continue
+                    
+                    # Map volume and order columns (optional)
+                    for col in ['buy_volume', 'buyVolume', 'buy_volume_coins']:
+                        if col in item_data.columns:
+                            column_mapping[col] = 'buy_volume'
+                            break
+                    
+                    for col in ['sell_volume', 'sellVolume', 'sell_volume_coins']:
+                        if col in item_data.columns:
+                            column_mapping[col] = 'sell_volume'
+                            break
+                    
+                    for col in ['buy_orders', 'buyOrders']:
+                        if col in item_data.columns:
+                            column_mapping[col] = 'buy_orders'
+                            break
+                    
+                    for col in ['sell_orders', 'sellOrders']:
+                        if col in item_data.columns:
+                            column_mapping[col] = 'sell_orders'
+                            break
+                    
+                    # Apply column mapping
+                    item_data = item_data.rename(columns=column_mapping)
+                    
+                    # Fill missing volume/order columns with defaults
+                    for col in ['buy_volume', 'sell_volume', 'buy_orders', 'sell_orders']:
+                        if col not in item_data.columns:
+                            item_data[col] = 0
+                    
+                    # Success!
+                    coverage_hours = (item_data['timestamp'].max() - item_data['timestamp'].min()).total_seconds() / 3600
+                    search_results.append(f"✅ {source_name}: Found {len(item_data)} records for {item}, coverage: {coverage_hours:.1f}h")
+                    
+                    self.logger.info(f"Successfully loaded {len(item_data)} records for {item} from {source_name}")
+                    self._last_search_results = search_results  # Store for error reporting
+                    return item_data.sort_values('timestamp')
+                    
+                except Exception as e:
+                    search_results.append(f"❌ {source_name}: Exception - {str(e)}")
+                    self.logger.error(f"Error loading from {data_path}: {e}")
+                    continue
             
-            # Fill missing volume/order columns with defaults
-            if 'buy_volume' not in item_data.columns:
-                item_data['buy_volume'] = 0
-            if 'sell_volume' not in item_data.columns:
-                item_data['sell_volume'] = 0
-            if 'buy_orders' not in item_data.columns:
-                item_data['buy_orders'] = 0
-            if 'sell_orders' not in item_data.columns:
-                item_data['sell_orders'] = 0
+            # All local sources failed, try live API fallback
+            try:
+                live_data = await self._fetch_live_bazaar_data(item)
+                if live_data is not None and not live_data.empty:
+                    search_results.append(f"✅ Live API: Retrieved current bazaar data for {item}")
+                    self._last_search_results = search_results
+                    return live_data
+                else:
+                    search_results.append(f"❌ Live API: No data returned for {item}")
+            except Exception as e:
+                search_results.append(f"❌ Live API: {str(e)}")
             
-            self.logger.info(f"Loaded {len(item_data)} records for {item} from {data_source}")
-            return item_data.sort_values('timestamp')
+            # Store search results for error reporting
+            self._last_search_results = search_results
+            self.logger.warning(f"Failed to load data for {item} from any source")
+            return None
             
         except Exception as e:
-            self.logger.error(f"Failed to load bazaar data for {item}: {e}")
+            self.logger.error(f"Critical error in _load_bazaar_data: {e}")
+            return None
+    
+    async def _fetch_live_bazaar_data(self, item: str) -> Optional[pd.DataFrame]:
+        """Fetch current bazaar data from live Hypixel API as fallback."""
+        try:
+            # Get API key from environment
+            import os
+            api_key = os.getenv('HYPIXEL_API_KEY')
+            if not api_key:
+                self.logger.warning("No HYPIXEL_API_KEY available for live API fallback")
+                return None
+            
+            # Fetch live bazaar data
+            url = f"https://api.hypixel.net/skyblock/bazaar"
+            params = {'key': api_key}
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, timeout=10) as response:
+                    if response.status != 200:
+                        self.logger.error(f"Live API request failed: {response.status}")
+                        return None
+                    
+                    data = await response.json()
+                    
+                    if not data.get('success', False):
+                        self.logger.error(f"Live API returned error: {data}")
+                        return None
+                    
+                    products = data.get('products', {})
+                    normalized_item = self._normalize_item_name(item)
+                    
+                    # Find the item in the response
+                    product_data = None
+                    for product_id, prod_data in products.items():
+                        if self._normalize_item_name(product_id) == normalized_item:
+                            product_data = prod_data
+                            break
+                    
+                    if product_data is None:
+                        self.logger.warning(f"Item {item} not found in live bazaar data")
+                        return None
+                    
+                    # Create a single-row DataFrame with current data
+                    current_time = datetime.now(timezone.utc)
+                    
+                    record = {
+                        'timestamp': current_time,
+                        'product_id': item,
+                        'buy_price': product_data.get('buy_summary', [{}])[0].get('pricePerUnit', 0) if product_data.get('buy_summary') else 0,
+                        'sell_price': product_data.get('sell_summary', [{}])[0].get('pricePerUnit', 0) if product_data.get('sell_summary') else 0,
+                        'buy_volume': product_data.get('quick_status', {}).get('buyMovingWeek', 0),
+                        'sell_volume': product_data.get('quick_status', {}).get('sellMovingWeek', 0),
+                        'buy_orders': product_data.get('quick_status', {}).get('buyOrders', 0),
+                        'sell_orders': product_data.get('quick_status', {}).get('sellOrders', 0)
+                    }
+                    
+                    # Create DataFrame with just this single point
+                    df = pd.DataFrame([record])
+                    
+                    self.logger.info(f"Retrieved live bazaar data for {item}")
+                    return df
+        
+        except Exception as e:
+            self.logger.error(f"Failed to fetch live bazaar data: {e}")
             return None
     
     def _resample_and_clean_data(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -411,23 +553,42 @@ class PlotCog(commands.Cog):
             df = self._load_bazaar_data(item, hours)
             
             if df is None or df.empty:
-                # Try to get suggestions if available
-                suggestions = []
+                # Get detailed search results for error reporting
+                search_results = getattr(self, '_last_search_results', [])
+                
+                embed = discord.Embed(
+                    title=f"❌ No Data Found: {item}",
+                    color=0xff0000,
+                    description=f"No bazaar data found for **{item}** in the last {hours} hours."
+                )
+                
+                if search_results:
+                    # Show what was searched and why it failed
+                    search_text = "\n".join(search_results[-10:])  # Last 10 results
+                    embed.add_field(
+                        name="🔍 Search Results",
+                        value=f"```\n{search_text}\n```",
+                        inline=False
+                    )
+                
+                # Add suggestions if available
                 if hasattr(self, '_last_available_items'):
                     suggestions = self._get_item_suggestions(item, self._last_available_items)
+                    if suggestions:
+                        embed.add_field(
+                            name="💡 Did you mean?",
+                            value="\n".join([f"• `{suggestion}`" for suggestion in suggestions]),
+                            inline=False
+                        )
                 
-                error_msg = f"❌ No bazaar data found for **{item}** in the last {hours} hours."
+                # Add common examples
+                embed.add_field(
+                    name="📝 Examples",
+                    value="`WHEAT`, `ENCHANTED_FLINT`, `COBBLESTONE`, `EMERALD`",
+                    inline=False
+                )
                 
-                if suggestions:
-                    error_msg += f"\n\n💡 **Did you mean:**\n" + "\n".join([f"• `{suggestion}`" for suggestion in suggestions])
-                else:
-                    error_msg += f"\n\n💡 **Examples:** `WHEAT`, `ENCHANTED_FLINT`, `COBBLESTONE`"
-                    
-                paths_searched = [str(p) for p in self.data_paths if p.exists()]
-                if paths_searched:
-                    error_msg += f"\n\n📁 **Searched:** {', '.join(paths_searched)}"
-                
-                await interaction.followup.send(error_msg)
+                await interaction.followup.send(embed=embed)
                 return
             
             # Resample and clean data

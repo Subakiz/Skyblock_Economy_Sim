@@ -140,6 +140,15 @@ fi
 echo -e "${GREEN}✅ Pre-flight checks passed${NC}"
 echo ""
 
+# Load and export environment variables from .env
+if [[ -f ".env" ]]; then
+    echo "Loading environment variables from .env..."
+    set -a  # automatically export all variables
+    source .env
+    set +a  # disable automatic export
+    echo -e "${GREEN}✅ Environment variables loaded${NC}"
+fi
+
 # Phase 1: Start Feature Ingestor Service (Background Process)
 echo -e "${BLUE}Phase 1: Starting Feature Ingestor Service...${NC}"
 nohup python3 scripts/run_feature_ingestor.py > logs/ingestor.log 2>&1 &

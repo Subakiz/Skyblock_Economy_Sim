@@ -259,15 +259,40 @@ class AuctionSniper(commands.Cog):
         Runs every 2 seconds for maximum speed and real-time snipe detection.
         Maintained from original two-speed architecture as specified in requirements.
         """
-        if not self.hypixel_client or not self.auction_watchlist:
+        # Enhanced debugging for sniper issues
+        if not self.hypixel_client:
+            self.logger.debug("Sniper scan skipped: No Hypixel client available (API key required)")
             return
+            
+        if not self.auction_watchlist:
+            self.logger.debug(f"Sniper scan skipped: Empty watchlist (need market intelligence update)")
+            return
+            
+        # Log sniper activity periodically for debugging
+        scan_count = getattr(self, '_scan_count', 0) + 1
+        self._scan_count = scan_count
+        if scan_count % 30 == 1:  # Log every 30 scans (1 minute)
+            self.logger.info(f"Sniper active: {len(self.auction_watchlist)} watchlist items, "
+                           f"FMV data for {len(self.fmv_data)} items")
         
         try:
             start_time = time.time()
             
-            # Fetch only page 0 for speed
-            response = self.hypixel_client.get_json("skyblock/auctions", {"page": 0})
-            auctions = response.get("auctions", [])
+            # For testing without API key, use test mode
+            if not hasattr(self, '_test_mode_enabled'):
+                # Enable test mode if we have watchlist and FMV but no API key
+                self._test_mode_enabled = bool(self.auction_watchlist and self.fmv_data and not os.getenv("HYPIXEL_API_KEY"))
+                if self._test_mode_enabled:
+                    self.logger.info("🧪 Test mode enabled: Creating mock auctions for sniper testing")
+            
+            if self._test_mode_enabled:
+                # Create mock auction data for testing
+                auctions = self._generate_test_auctions()
+                self.logger.debug(f"Generated {len(auctions)} test auctions for evaluation")
+            else:
+                # Fetch only page 0 for speed (real mode)
+                response = self.hypixel_client.get_json("skyblock/auctions", {"page": 0})
+                auctions = response.get("auctions", [])
             
             snipes_found = 0
             
@@ -700,22 +725,31 @@ class AuctionSniper(commands.Cog):
         try:
             item_name = auction.get("item_name", "").strip()
             price = float(auction.get("starting_bid", 0))
+            uuid = auction.get("uuid", "")[:8]  # Short UUID for logging
+            
+            # Enhanced logging for debugging
+            self.logger.debug(f"🔍 Evaluating auction: {item_name} @ {price:,.0f} coins (UUID: {uuid}...)")
             
             if price <= 0:
+                self.logger.debug(f"❌ {item_name}: Invalid price ({price})")
                 return False
             
             # Safety check: Skip extremely expensive items (> 1B coins) to avoid false positives
             if price > 1_000_000_000:
+                self.logger.debug(f"❌ {item_name}: Too expensive ({price:,.0f} > 1B)")
                 return False
             
             # Manipulation Check: Compare against FMV
             fmv_info = self.fmv_data.get(item_name)
             if not fmv_info:
+                self.logger.debug(f"❌ {item_name}: No FMV data available")
                 return False  # No FMV data available
             
             fmv = fmv_info.get("fmv", 0)
             samples = fmv_info.get("samples", 0)
             fmv_method = fmv_info.get("method", "unknown")
+            
+            self.logger.debug(f"📊 {item_name}: FMV={fmv:,.0f}, samples={samples}, method={fmv_method}")
             
             # Enhanced Liquidity Check: Ensure sufficient market activity
             min_samples_config = self.config.get("auction_sniper", {}).get("min_liquidity_samples", 10)
@@ -742,10 +776,12 @@ class AuctionSniper(commands.Cog):
             max_multiplier = sniper_config.get("max_fmv_multiplier", 1.1)
             
             if price > fmv * max_multiplier:
+                self.logger.debug(f"❌ {item_name}: Price too high ({price:,.0f} > {fmv * max_multiplier:,.0f}, {max_multiplier}x FMV)")
                 return False
             
             # Attribute Check: Parse NBT for critical attributes
             if not self._check_item_attributes(auction):
+                self.logger.debug(f"❌ {item_name}: Failed attribute check")
                 return False
             
             # Profitability Check
@@ -753,25 +789,27 @@ class AuctionSniper(commands.Cog):
             estimated_profit = fmv - price - auction_house_fee
             
             if estimated_profit < self.profit_threshold:
+                self.logger.debug(f"❌ {item_name}: Insufficient profit ({estimated_profit:,.0f} < {self.profit_threshold:,.0f})")
                 return False
             
             # Additional safety: Ensure profit margin is reasonable (at least 5%)
             profit_margin = estimated_profit / price
             if profit_margin < 0.05:
+                self.logger.debug(f"❌ {item_name}: Low profit margin ({profit_margin:.1%} < 5%)")
                 return False
             
             # Final liquidity check: Ensure profit justifies risk for low-liquidity items
             if samples < 20 and estimated_profit < self.profit_threshold * 2:
-                self.logger.debug(f"Skipping {item_name}: low liquidity requires higher profit ({estimated_profit:,.0f} < {self.profit_threshold * 2:,.0f})")
+                self.logger.debug(f"❌ {item_name}: Low liquidity requires higher profit ({estimated_profit:,.0f} < {self.profit_threshold * 2:,.0f})")
                 return False
             
-            self.logger.info(f"Valid snipe found: {item_name} at {price:,.0f} coins "
+            self.logger.info(f"✅ Valid snipe found: {item_name} at {price:,.0f} coins "
                            f"(FMV: {fmv:,.0f}, Profit: {estimated_profit:,.0f}, Margin: {profit_margin:.1%}, "
                            f"Samples: {samples}, Method: {fmv_method})")
             return True
         
         except Exception as e:
-            self.logger.error(f"Error verifying snipe: {e}")
+            self.logger.error(f"Error verifying snipe for {auction.get('item_name', 'unknown')}: {e}")
             return False
     
     def _check_item_attributes(self, auction: Dict[str, Any]) -> bool:
@@ -954,6 +992,49 @@ class AuctionSniper(commands.Cog):
         except Exception as e:
             self.logger.error(f"Failed to send snipe alert: {e}")
     
+    def _generate_test_auctions(self) -> List[Dict[str, Any]]:
+        """Generate mock auction data for testing sniper logic without API key."""
+        import uuid
+        import random
+        
+        test_auctions = []
+        
+        # Create test auctions for items in our watchlist
+        for item_name in list(self.auction_watchlist)[:5]:  # Test with first 5 items
+            fmv_info = self.fmv_data.get(item_name, {})
+            fmv = fmv_info.get("fmv", 50000)
+            
+            # Create auctions at different price points
+            test_prices = [
+                int(fmv * 0.7),   # Good snipe (30% below FMV)
+                int(fmv * 0.95),  # Marginal snipe (5% below FMV)
+                int(fmv * 1.2),   # Too expensive (20% above FMV)
+            ]
+            
+            for i, price in enumerate(test_prices):
+                auction = {
+                    "uuid": str(uuid.uuid4()),
+                    "auctioneer": f"test_seller_{random.randint(1000, 9999)}",
+                    "profile_id": str(uuid.uuid4()),
+                    "item_name": item_name,
+                    "item_lore": "",
+                    "extra": "",
+                    "category": "misc",
+                    "tier": "COMMON",
+                    "starting_bid": price,
+                    "item_bytes": "",
+                    "claimed": False,
+                    "claimed_bidders": [],
+                    "highest_bid_amount": price,
+                    "bids": [],
+                    "bin": True,  # Buy It Now
+                    "start": int(datetime.now(timezone.utc).timestamp() * 1000),
+                    "end": int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp() * 1000)
+                }
+                test_auctions.append(auction)
+        
+        return test_auctions
+    
     # Discord Commands
     
     @app_commands.command(name="sniper_channel", description="Set the channel for auction snipe alerts")
@@ -1060,6 +1141,70 @@ class AuctionSniper(commands.Cog):
         except Exception as e:
             self.logger.error(f"Sniper status command error: {e}")
             await interaction.followup.send("❌ Error retrieving sniper status.", ephemeral=True)
+    
+    @app_commands.command(name="sniper_test", description="Test sniper logic with mock auctions")
+    async def sniper_test(self, interaction: discord.Interaction):
+        """Test sniper logic with mock auction data."""
+        try:
+            await interaction.response.defer()
+            
+            if not self.auction_watchlist:
+                await interaction.followup.send("❌ No watchlist items available. Run market intelligence update first.", ephemeral=True)
+                return
+            
+            if not self.fmv_data:
+                await interaction.followup.send("❌ No FMV data available. Run market intelligence update first.", ephemeral=True)
+                return
+            
+            # Force enable test mode
+            self._test_mode_enabled = True
+            
+            # Generate test auctions
+            test_auctions = self._generate_test_auctions()
+            
+            embed = discord.Embed(title="🧪 Sniper Test Results", color=0x00ff00, 
+                                timestamp=datetime.now(timezone.utc))
+            
+            snipes_found = 0
+            total_evaluated = 0
+            results = []
+            
+            # Test each auction
+            for auction in test_auctions:
+                total_evaluated += 1
+                item_name = auction.get("item_name", "")
+                price = auction.get("starting_bid", 0)
+                
+                if await self._verify_snipe(auction):
+                    snipes_found += 1
+                    fmv_info = self.fmv_data.get(item_name, {})
+                    fmv = fmv_info.get("fmv", 0)
+                    profit = fmv - price - (price * 0.01)
+                    results.append(f"✅ **{item_name}**: {price:,.0f} → {fmv:,.0f} (Profit: {profit:,.0f})")
+                else:
+                    results.append(f"❌ **{item_name}**: {price:,.0f} (Failed verification)")
+            
+            embed.add_field(name="📊 Summary", 
+                           value=f"Evaluated: {total_evaluated}\nValid Snipes: {snipes_found}", 
+                           inline=False)
+            
+            if results:
+                # Show first 10 results
+                results_text = "\n".join(results[:10])
+                if len(results) > 10:
+                    results_text += f"\n... and {len(results) - 10} more"
+                embed.add_field(name="🔍 Test Results", value=results_text, inline=False)
+            
+            embed.add_field(name="ℹ️ Note", 
+                           value="This test uses mock auction data. Check logs for detailed evaluation info.", 
+                           inline=False)
+            
+            await interaction.followup.send(embed=embed)
+            self.logger.info(f"Sniper test completed: {snipes_found}/{total_evaluated} auctions passed verification")
+        
+        except Exception as e:
+            self.logger.error(f"Sniper test command error: {e}")
+            await interaction.followup.send("❌ Error running sniper test.", ephemeral=True)
     
     async def _save_sniper_config(self):
         """Save sniper configuration to disk asynchronously."""

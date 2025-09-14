@@ -269,6 +269,9 @@ class FeatureIngestor:
             summary_records = self._build_summary_records()
             self._write_summary_for_hour(self.current_hour_start, summary_records)
             
+            # Auto-update the NDJSON bridge after summary is written
+            self._update_ndjson_bridge()
+            
             # Clean up raw spool file (ephemeral)
             if self.raw_spool_file and self.raw_spool_file.exists():
                 self.raw_spool_file.unlink()
@@ -276,6 +279,23 @@ class FeatureIngestor:
         
         except Exception as e:
             self.logger.error(f"Failed to commit hour summary: {e}")
+    
+    def _update_ndjson_bridge(self):
+        """Update the NDJSON bridge file for legacy code compatibility."""
+        try:
+            self.logger.debug("Updating NDJSON bridge after feature summary commit...")
+            
+            # Call the bridge conversion function directly
+            from scripts.bridge_parquet_to_ndjson import convert_parquet_summaries_to_ndjson
+            success = convert_parquet_summaries_to_ndjson()
+            
+            if success:
+                self.logger.debug("NDJSON bridge updated successfully")
+            else:
+                self.logger.warning("NDJSON bridge update failed")
+                
+        except Exception as e:
+            self.logger.error(f"Failed to update NDJSON bridge: {e}")
     
     def _process_auction_record(self, auction: Dict[str, Any]):
         """Process a single auction record into the current hour's ladders."""

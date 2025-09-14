@@ -667,8 +667,22 @@ def load_auction_features_from_file(data_directory: str, item_ids: List[str] = N
     
     if not features_path.exists():
         print(f"Auction features file not found: {features_path}")
-        print("Run auction feature pipeline first to generate features.")
-        return None
+        print("Attempting to generate features via bridge conversion...")
+        
+        # Try bridge conversion as fallback
+        try:
+            from scripts.bridge_parquet_to_ndjson import convert_parquet_summaries_to_ndjson
+            success = convert_parquet_summaries_to_ndjson()
+            if not success or not features_path.exists():
+                print("❌ Bridge conversion failed or file still missing")
+                print("Run auction feature pipeline first to generate features.")
+                return None
+            else:
+                print("✅ Generated auction features via bridge conversion")
+        except Exception as e:
+            print(f"❌ Bridge conversion failed: {e}")
+            print("Run auction feature pipeline first to generate features.")
+            return None
     
     records = []
     try:

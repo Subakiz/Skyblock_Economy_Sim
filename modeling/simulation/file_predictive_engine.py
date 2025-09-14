@@ -55,13 +55,29 @@ class FileBasedPredictiveMarketEngine:
         features_path = Path(data_directory) / "auction_features.ndjson"
         
         if not features_path.exists():
-            print("Auction features not found. Building from raw auction data...")
+            print("Auction features not found. Attempting to build...")
+            
+            # First try building from raw auction data
             try:
                 build_auction_features_from_files()
-                return features_path.exists()
+                if features_path.exists():
+                    return True
             except Exception as e:
-                print(f"Failed to build auction features: {e}")
-                return False
+                print(f"Failed to build auction features from raw data: {e}")
+            
+            # Fallback: try bridge conversion from feature summaries
+            print("Attempting bridge conversion from feature summaries...")
+            try:
+                from scripts.bridge_parquet_to_ndjson import convert_parquet_summaries_to_ndjson
+                success = convert_parquet_summaries_to_ndjson()
+                if success and features_path.exists():
+                    print("✅ Successfully created auction features via bridge conversion")
+                    return True
+            except Exception as e:
+                print(f"Failed bridge conversion: {e}")
+            
+            print("❌ Could not create auction features via any method")
+            return False
         
         return True
     
